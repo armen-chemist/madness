@@ -1,0 +1,23 @@
+# He2 (4 spins anti-parallel to B), bond at theta = 45 and 90 deg to B, two starts (mol, atm) per point.
+# Most expensive file (4 electrons, rcut 1.0): run after file 19; add R values near its R_eq if needed.
+# No reference at this field. Austad, Borgoo, Tellgren, Helgaker, PCCP (2020) (doi 10.1039/D0CP03259J), FCI, Table V,
+# B = 1 B0 only: quintet ground state UNBOUND along B (R_eq = inf) but bound perpendicular (R_eq 3.62, D 0.0198 Ha).
+# At 425.5 B0 He2 is strongly bound along B (file 19 refs): whether the perpendicular preference survives is open.
+# Summary: bash summarize.sh results/20_He2_angles_B425 <2 E(He) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+th90_R0.3_mol        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.15,0,0;2,0.15,0,0"
+th90_R0.3_atm        nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,-0.15,0,0;2,0.15,0,0"
+th90_R0.4_mol        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.2,0,0;2,0.2,0,0"
+th90_R0.4_atm        nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,-0.2,0,0;2,0.2,0,0"
+th90_R0.55_mol       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.275,0,0;2,0.275,0,0"
+th90_R0.55_atm       nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,-0.275,0,0;2,0.275,0,0"
+th45_R0.3_mol        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.106066,0,-0.106066;2,0.106066,0,0.106066"
+th45_R0.3_atm        nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,-0.106066,0,-0.106066;2,0.106066,0,0.106066"
+th45_R0.4_mol        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.141421,0,-0.141421;2,0.141421,0,0.141421"
+th45_R0.4_atm        nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,-0.141421,0,-0.141421;2,0.141421,0,0.141421"
+th45_R0.55_mol       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.194454,0,-0.194454;2,0.194454,0,0.194454"
+th45_R0.55_atm       nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,-0.194454,0,-0.194454;2,0.194454,0,0.194454"
+ropt_th90_R0.40_mol  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.2,0,0;2,0.2,0,0"
+ropt_th90_R0.40_atm  nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.2,0,0;2,0.2,0,0"
+ropt_th45_R0.40_mol  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.141421,0,-0.141421;2,0.141421,0,0.141421"
+ropt_th45_R0.40_atm  nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.141421,0,-0.141421;2,0.141421,0,0.141421"

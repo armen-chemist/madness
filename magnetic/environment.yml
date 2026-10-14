@@ -1,0 +1,14 @@
+# conda environment for building and running the magnetic MADNESS code (tested October 2026)
+name: madness
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - gcc=14.3
+  - gxx=14.3
+  - openmpi=5.0
+  - openblas=0.3
+  - libblas=*=*openblas
+  - liblapack=*=*openblas
+  - cmake>=3.24,<4
+  - make

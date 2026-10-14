@@ -1,0 +1,9 @@
+# H atom, B = 500 B0: second exact reference, binding 6.257087674681 Ha (Kravchenko 1996, Table I).
+# Error expected to fall like qmax^-3 (as at B = 100 B0, file 01).
+# Summary: bash summarize.sh results/05_H_B500_qmax 6.257087674681
+COMMON B=500 E0=243.7 thresh=1e-7 L=6 rcut=0.6 rtaper=0.06 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 ref=243.742912325319
+qextra10   qextra=10
+qextra50   qextra=50
+qextra100  qextra=100
+qextra150  qextra=150
+qextra200  qextra=200

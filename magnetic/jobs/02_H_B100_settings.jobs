@@ -1,0 +1,13 @@
+# H atom, B = 100 B0: every other numerical setting, one change per job, at qextra = 80 (cutoff error -8 uHa)
+# and rcut 2.13, rtaper 0.4, dphi 1.5 at qextra = 10.
+# Compare each job with qextra80 / qextra10 of file 01. Summary: bash summarize.sh results/02_H_B100_settings 3.789804236305
+COMMON B=100 E0=48.1 thresh=1e-7 L=8 rcut=1.34 rtaper=0.134 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 ref=46.210195763695
+q80_k8         qextra=80 k=8
+q80_k12        qextra=80 k=12
+q80_th1e-6     qextra=80 thresh=1e-6
+q80_th1e-8     qextra=80 thresh=1e-8
+q80_L6         qextra=80 L=6
+q80_L12        qextra=80 L=12
+q10_rcut2.13   qextra=10 rcut=2.13 rtaper=0.213
+q10_rtaper0.4  qextra=10 rtaper=0.4
+q10_dphi1.5    qextra=10 dphi=1.5

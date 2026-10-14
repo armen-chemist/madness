@@ -1,0 +1,9 @@
+# H atom, B = 1 B0 (weak field: the Fourier cutoff is set by qextra alone, qmax ~ 9 + qextra).
+# Exact binding 0.831168896733 Ha (Kravchenko 1996).
+# Settings identical to the Bischoff H3 run (file 07), so this is also the H-atom reference of file 07.
+# Summary: bash summarize.sh results/06_H_B1_qmax 0.831168896733
+COMMON B=1 E0=-0.3 axial=0 k=9 thresh=1e-6 eprec=1e-8 L=20 maxiter=30 tol=1e-7 ref=-0.331168896733
+qextra10  qextra=10
+qextra20  qextra=20
+qextra40  qextra=40
+qextra60  qextra=60

@@ -1,0 +1,23 @@
+# H2 spin triplet, bond at theta = 60 deg to B (bond in the x-z plane), potential curve E(R).
+# Two starts per R: mol (Lz 0, -1 about the B axis) and atm (two magnetically translated H 1s).
+# The lower converged E_phys is the ground state at that R. theta = 90: Lange et al., Science 337, 327
+# (2012) found the H2 triplet bound perpendicular to B (paramagnetic bonding, B = 0.75-2.25 B0 there); no reference exists at this field.
+# R up to 0.60 to see whether this orientation is bound at all.
+# Summary: bash summarize.sh results/13_H2_theta60_B425 <2 E(H) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=30
+R0.2_mol        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.086603,0,-0.05;1,0.086603,0,0.05"
+R0.2_atm        nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.086603,0,-0.05;1,0.086603,0,0.05"
+R0.24_mol       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.103923,0,-0.06;1,0.103923,0,0.06"
+R0.24_atm       nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.103923,0,-0.06;1,0.103923,0,0.06"
+R0.28_mol       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.121244,0,-0.07;1,0.121244,0,0.07"
+R0.28_atm       nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.121244,0,-0.07;1,0.121244,0,0.07"
+R0.33_mol       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.142894,0,-0.0825;1,0.142894,0,0.0825"
+R0.33_atm       nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.142894,0,-0.0825;1,0.142894,0,0.0825"
+R0.4_mol        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.173205,0,-0.1;1,0.173205,0,0.1"
+R0.4_atm        nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.173205,0,-0.1;1,0.173205,0,0.1"
+R0.5_mol        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.216506,0,-0.125;1,0.216506,0,0.125"
+R0.5_atm        nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.216506,0,-0.125;1,0.216506,0,0.125"
+R0.6_mol        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.259808,0,-0.15;1,0.259808,0,0.15"
+R0.6_atm        nelec=2 state=triplet axial=0 mloc=0 E0=207 "atoms=1,-0.259808,0,-0.15;1,0.259808,0,0.15"
+ropt_R0.26_mol  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,-0.112583,0,-0.065;1,0.112583,0,0.065"
+ropt_R0.26_atm  nelec=2 state=triplet axial=0 mloc=0 E0=207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,-0.112583,0,-0.065;1,0.112583,0,0.065"

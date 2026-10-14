@@ -1,0 +1,15 @@
+# H3 quartet, bending the linear chain: bond d = 0.22 (Nader R_eq), angle alpha = H-H-H in the x-z plane,
+# central atom on the B axis before centring; alpha = 180 linear along B (file 15), alpha = 60 the x90 triangle.
+# Two starts per angle (mol: Lz 0, -1, -2; atm: three translated 1s); the lower E_phys counts.
+# Summary: bash summarize.sh results/18_H3_bent_B425 <3 E(H) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+alpha180_mol  nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.22;1,0,0,0;1,0,0,0.22"
+alpha180_atm  nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0,0,-0.22;1,0,0,0;1,0,0,0.22"
+alpha150_mol  nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.01898,0,-0.212504;1,-0.03796,0,0;1,0.01898,0,0.212504"
+alpha150_atm  nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.01898,0,-0.212504;1,-0.03796,0,0;1,0.01898,0,0.212504"
+alpha120_mol  nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.036667,0,-0.190526;1,-0.073333,0,0;1,0.036667,0,0.190526"
+alpha120_atm  nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.036667,0,-0.190526;1,-0.073333,0,0;1,0.036667,0,0.190526"
+alpha90_mol   nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.051854,0,-0.155563;1,-0.103709,0,0;1,0.051854,0,0.155563"
+alpha90_atm   nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.051854,0,-0.155563;1,-0.103709,0,0;1,0.051854,0,0.155563"
+alpha60_mol   nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.063509,0,-0.11;1,-0.127017,0,0;1,0.063509,0,0.11"
+alpha60_atm   nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.063509,0,-0.11;1,-0.127017,0,0;1,0.063509,0,0.11"

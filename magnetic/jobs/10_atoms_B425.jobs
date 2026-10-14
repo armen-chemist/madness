@@ -1,0 +1,12 @@
+# Separated atoms at B = 425.5 B0 with EXACTLY the numerical settings of the molecule files 11-20, at both
+# rcut values used there (0.75: nuclei on the B axis; 1.0: nuclei off the axis). The two must agree to < 1 uHa.
+# E_phys (spin Zeeman included) of these runs is the zero of every dissociation energy:
+#   D(H2) = 2 E(H) - E(H2),  D(H3) = 3 E(H) - E(H3),  D(He2) = 2 E(He) - E(He2)   (positive = bound).
+# H: E_phys = -(binding).
+# He: spin-polarized 1s0 2p-1 (Lz 0, -1), the He ground state above B ~ 0.75 B0.
+# Summary: bash summarize.sh results/10_atoms_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5
+H_atom_rcut0.75   nelec=1 E0=207 tol=1e-7 maxiter=20 rcut=0.75 rtaper=0.075
+He_atom_rcut0.75  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=200.09 E0b=205.37 maxscf=30 rcut=0.75 rtaper=0.075
+H_atom_rcut1.0    nelec=1 E0=207 tol=1e-7 maxiter=20 rcut=1.0 rtaper=0.1
+He_atom_rcut1.0   nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=200.09 E0b=205.37 maxscf=30 rcut=1.0 rtaper=0.1

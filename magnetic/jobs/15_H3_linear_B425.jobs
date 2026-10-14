@@ -1,0 +1,15 @@
+# H3 quartet (3 spins anti-parallel to B), linear symmetric chain ALONG B, spacing d, start Lz 0, -1, -2.
+# Nader, Lopez Vieyra, Turbiner, PRA 100, 012508 (2019), Table I, B = 425.5 B0 (their 1000 x 1e9 G = 1e12 G):
+# E_T = -20.90 Ha, R_eq = 0.219 bohr. Both theirs (correlated trial function) and ours (UHF) are upper bounds to the
+# exact energy, so no strict order: expect agreement to roughly 0.1 Ha and in R_eq to a few %.
+# Summary: bash summarize.sh results/15_H3_linear_B425 <3 E(H) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=0.75 rtaper=0.075 maxscf=40
+d0.17       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.17;1,0,0,0;1,0,0,0.17"
+d0.19       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.19;1,0,0,0;1,0,0,0.19"
+d0.21       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.21;1,0,0,0;1,0,0,0.21"
+d0.22       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.22;1,0,0,0;1,0,0,0.22"
+d0.23       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.23;1,0,0,0;1,0,0,0.23"
+d0.25       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.25;1,0,0,0;1,0,0,0.25"
+d0.28       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.28;1,0,0,0;1,0,0,0.28"
+d0.32       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0,0,-0.32;1,0,0,0;1,0,0,0.32"
+ropt_d0.22  nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0,0,-0.22;1,0,0,0;1,0,0,0.22"

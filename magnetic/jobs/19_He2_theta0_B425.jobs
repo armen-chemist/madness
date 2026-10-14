@@ -1,0 +1,22 @@
+# He2, 4 spins anti-parallel to B, bond ALONG B: potential curve E(R) + bond-length search.
+# mol start: Lz 0, -1, -2, -3 about the axis: all 4 electrons tightly bound (nu = 0), as found by Medin & Lai 2006, Table III.
+# atm start at 3 R (two He atoms in 1s0 2p-1): checks that both starts reach the same state.
+# References at B = 425.5 B0 (bond along B), energies per atom:
+#   Hartree-Fock (Lai, RMP 73, 629 (2001), as quoted by Medin & Lai, PRA 74, 062507 (2006)): He -575.5 eV, He2 -601.2 eV
+#     -> D(He2) = 2 x 25.7 = 51.4 eV. (Lai's HF is the adiabatic approximation, so exact HF is somewhat lower.)
+#   DFT (Medin & Lai 2006, Table III): He -603.5 eV, He2 -641.2 eV, R_eq = 0.25 bohr (DFT overbinds by ~10 %).
+# Summary: bash summarize.sh results/19_He2_theta0_B425 <2 E(He) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=0.75 rtaper=0.075 maxscf=40
+R0.22       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.11;2,0,0,0.11"
+R0.26       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.13;2,0,0,0.13"
+R0.3        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.15;2,0,0,0.15"
+R0.34       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.17;2,0,0,0.17"
+R0.38       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.19;2,0,0,0.19"
+R0.45       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.225;2,0,0,0.225"
+R0.55       nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.275;2,0,0,0.275"
+R0.7        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.35;2,0,0,0.35"
+R0.9        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,0,0,-0.45;2,0,0,0.45"
+R0.3_atm    nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,0,0,-0.15;2,0,0,0.15"
+R0.45_atm   nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,0,0,-0.225;2,0,0,0.225"
+R0.7_atm    nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,0,0,-0.35;2,0,0,0.35"
+ropt_R0.26  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,0,0,-0.13;2,0,0,0.13"

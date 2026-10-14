@@ -1,0 +1,15 @@
+# H2 spin triplet (Lz 0, -1 start), bond ALONG B: potential curve E(R) and a bond-length search (ropt).
+# Lai, RMP 73, 629 (2001), Table I, B = 425.5 B0 (his B12 = 1, i.e. 1e12 G): Q2(inf) = 2 E(H) - E(H2) = 46 eV (accuracy 10 %).
+# Summary: bash summarize.sh results/11_H2_theta0_B425 <2 E(H) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=0.75 rtaper=0.075 maxscf=30
+R0.16       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.08;1,0,0,0.08"
+R0.18       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.09;1,0,0,0.09"
+R0.2        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.1;1,0,0,0.1"
+R0.22       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.11;1,0,0,0.11"
+R0.24       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.12;1,0,0,0.12"
+R0.26       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.13;1,0,0,0.13"
+R0.28       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.14;1,0,0,0.14"
+R0.32       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.16;1,0,0,0.16"
+R0.4        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.2;1,0,0,0.2"
+R0.5        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,0,0,-0.25;1,0,0,0.25"
+ropt_R0.24  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0,0,-0.12;1,0,0,0.12"

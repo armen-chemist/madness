@@ -1,0 +1,7 @@
+# Cyclic H3 quartet (3 spins anti-parallel to B), B = 1 B0, equilateral triangle, side 144.5 pm = 2.7307 bohr,
+# plane perpendicular to B. Same level of theory (UHF) as Bischoff, PRA 101, 053413 (2020), Table II:
+# E = -2.50237 Eh (3 H atoms: -2.49349 Eh). Validation of the 3-electron code on a cyclic structure.
+# Expensive: ~600 modes, L = 20, 3 electrons.
+# Summary: bash summarize.sh results/07_H3_B1_Bischoff  ;  difference to Bischoff: grep 'E - ref' results/07_H3_B1_Bischoff/*.log
+COMMON B=1 axial=0 k=9 thresh=1e-6 eprec=1e-8 L=20 nelec=3 state=highspin mloc=0 E0=-0.3 inner=3 maxscf=40 tolscf=1e-6 ref=-2.50237
+H3_q20  qextra=20 "atoms=1,1.577089,0,0;1,-0.788545,1.365800,0;1,-0.788545,-1.365800,0"

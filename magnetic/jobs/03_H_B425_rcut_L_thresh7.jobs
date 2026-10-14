@@ -1,0 +1,9 @@
+# H atom, B = 425.5 B0: r_cut x box L at thresh 1e-7 (Florian's question: is the result independent of both?).
+# Summary: bash summarize.sh results/03_H_B425_rcut_L_thresh7
+COMMON B=425.5 E0=207 thresh=1e-7 qextra=10 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+rcut1.0_L4   rcut=1.0 rtaper=0.1 L=4
+rcut1.0_L8   rcut=1.0 rtaper=0.1 L=8
+rcut1.0_L12  rcut=1.0 rtaper=0.1 L=12
+rcut1.2_L4   rcut=1.2 rtaper=0.12 L=4
+rcut1.2_L8   rcut=1.2 rtaper=0.12 L=8
+rcut1.2_L12  rcut=1.2 rtaper=0.12 L=12

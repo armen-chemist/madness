@@ -1,0 +1,30 @@
+# Cyclic H3 quartet, equilateral triangle of side a, plane TILTED against B (atomic start, mloc=0):
+#   x30, x60  perp triangle rotated by 30, 60 deg about x;  x90  plane contains B, one edge parallel to B;
+#   y90  plane contains B, one vertex on the B axis (median parallel to B). Angle 0 = file 16.
+# Check: x90 with a = 0.22 is the same geometry as bent alpha = 60 with d = 0.22 (file 18).
+# Summary: bash summarize.sh results/17_H3_triangle_tilt_B425 <3 E(H) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+x30_a0.22       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.127017,0,0;1,-0.063509,0.095263,0.055;1,-0.063509,-0.095263,-0.055"
+x30_a0.26       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.150111,0,0;1,-0.075056,0.112583,0.065;1,-0.075056,-0.112583,-0.065"
+x30_a0.3        nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.173205,0,0;1,-0.086603,0.129904,0.075;1,-0.086603,-0.129904,-0.075"
+x30_a0.36       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.207846,0,0;1,-0.103923,0.155885,0.09;1,-0.103923,-0.155885,-0.09"
+x30_a0.45       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.259808,0,0;1,-0.129904,0.194856,0.1125;1,-0.129904,-0.194856,-0.1125"
+x60_a0.22       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.127017,0,0;1,-0.063509,0.055,0.095263;1,-0.063509,-0.055,-0.095263"
+x60_a0.26       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.150111,0,0;1,-0.075056,0.065,0.112583;1,-0.075056,-0.065,-0.112583"
+x60_a0.3        nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.173205,0,0;1,-0.086603,0.075,0.129904;1,-0.086603,-0.075,-0.129904"
+x60_a0.36       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.207846,0,0;1,-0.103923,0.09,0.155885;1,-0.103923,-0.09,-0.155885"
+x60_a0.45       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.259808,0,0;1,-0.129904,0.1125,0.194856;1,-0.129904,-0.1125,-0.194856"
+x90_a0.22       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.127017,0,0;1,-0.063509,0,0.11;1,-0.063509,0,-0.11"
+x90_a0.26       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.150111,0,0;1,-0.075056,0,0.13;1,-0.075056,0,-0.13"
+x90_a0.3        nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.173205,0,0;1,-0.086603,0,0.15;1,-0.086603,0,-0.15"
+x90_a0.36       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.207846,0,0;1,-0.103923,0,0.18;1,-0.103923,0,-0.18"
+x90_a0.45       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.259808,0,0;1,-0.129904,0,0.225;1,-0.129904,0,-0.225"
+y90_a0.22       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0,0,-0.127017;1,0,0.11,0.063509;1,0,-0.11,0.063509"
+y90_a0.26       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0,0,-0.150111;1,0,0.13,0.075056;1,0,-0.13,0.075056"
+y90_a0.3        nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0,0,-0.173205;1,0,0.15,0.086603;1,0,-0.15,0.086603"
+y90_a0.36       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0,0,-0.207846;1,0,0.18,0.103923;1,0,-0.18,0.103923"
+y90_a0.45       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0,0,-0.259808;1,0,0.225,0.129904;1,0,-0.225,0.129904"
+ropt_x30_a0.30  nelec=3 state=highspin axial=0 mloc=0 E0=207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.173205,0,0;1,-0.086603,0.129904,0.075;1,-0.086603,-0.129904,-0.075"
+ropt_x60_a0.30  nelec=3 state=highspin axial=0 mloc=0 E0=207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.173205,0,0;1,-0.086603,0.075,0.129904;1,-0.086603,-0.075,-0.129904"
+ropt_x90_a0.30  nelec=3 state=highspin axial=0 mloc=0 E0=207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.173205,0,0;1,-0.086603,0,0.15;1,-0.086603,0,-0.15"
+ropt_y90_a0.30  nelec=3 state=highspin axial=0 mloc=0 E0=207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0,0,-0.173205;1,0,0.15,0.086603;1,0,-0.15,0.086603"

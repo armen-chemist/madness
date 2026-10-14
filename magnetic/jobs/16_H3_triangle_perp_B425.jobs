@@ -1,0 +1,17 @@
+# Cyclic H3 quartet, equilateral triangle of side a, plane PERPENDICULAR to B (C3 axis along B).
+# Two starts: mol (Lz 0, -1, -2 about the B axis) and atm (three magnetically translated H 1s).
+# Compare with the linear chain (file 15) and with H2 + H (files 10, 11).
+# Summary: bash summarize.sh results/16_H3_triangle_perp_B425 <3 E(H) from file 10>
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+a0.22_mol       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.127017,0,0;1,-0.063509,0.11,0;1,-0.063509,-0.11,0"
+a0.22_atm       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.127017,0,0;1,-0.063509,0.11,0;1,-0.063509,-0.11,0"
+a0.26_mol       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.150111,0,0;1,-0.075056,0.13,0;1,-0.075056,-0.13,0"
+a0.26_atm       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.150111,0,0;1,-0.075056,0.13,0;1,-0.075056,-0.13,0"
+a0.3_mol        nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.173205,0,0;1,-0.086603,0.15,0;1,-0.086603,-0.15,0"
+a0.3_atm        nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.173205,0,0;1,-0.086603,0.15,0;1,-0.086603,-0.15,0"
+a0.36_mol       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.207846,0,0;1,-0.103923,0.18,0;1,-0.103923,-0.18,0"
+a0.36_atm       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.207846,0,0;1,-0.103923,0.18,0;1,-0.103923,-0.18,0"
+a0.45_mol       nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 "atoms=1,0.259808,0,0;1,-0.129904,0.225,0;1,-0.129904,-0.225,0"
+a0.45_atm       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.259808,0,0;1,-0.129904,0.225,0;1,-0.129904,-0.225,0"
+ropt_a0.30_mol  nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.173205,0,0;1,-0.086603,0.15,0;1,-0.086603,-0.15,0"
+ropt_a0.30_atm  nelec=3 state=highspin axial=0 mloc=0 E0=207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.173205,0,0;1,-0.086603,0.15,0;1,-0.086603,-0.15,0"

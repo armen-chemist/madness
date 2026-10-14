@@ -1,0 +1,12 @@
+# H atom, B = 100 B0: Fourier cutoff qmax = B (rcut + 3 rtaper)/2 + qextra = 97 + (qextra - 10) at rcut 1.34.
+# Exact binding 3.789804236305 Ha (Kravchenko et al., PRA 54, 287 (1996), Table I).
+# Summary: bash summarize.sh results/01_H_B100_qmax 3.789804236305
+COMMON B=100 E0=48.1 thresh=1e-7 L=8 rcut=1.34 rtaper=0.134 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 ref=46.210195763695
+qextra10   qextra=10
+qextra30   qextra=30
+qextra50   qextra=50
+qextra80   qextra=80
+qextra120  qextra=120
+qextra160  qextra=160
+qextra240  qextra=240
+qextra320  qextra=320
