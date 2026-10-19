@@ -11,7 +11,7 @@
 ///
 /// Usage:  magneticatom B=.. [atoms=Z,x,y,z;Z,x,y,z...] [L=20] [k=8] [thresh=1e-6] [eprec=1e-6]
 ///                      [E0=-0.5] [maxiter=60] [tol=1e-7] [ref=...] [m=0]
-///                      [qextra=10] [rcut=..] [rtaper=..] [dphi=3] [h=0.25] [tmin=1e-8] [tmax_factor=45]
+///                      [qextra=10] [rcut=..] [rtaper=..] [dphi=3] [h=0.25] [tmin=1e-8] [tmax_factor=45] [qbatch=64]
 ///   nelec=2: closed-shell RHF;  nelec=N state=highspin (or triplet): spin-polarized UHF with start
 ///   orbitals from mlist=m1,..,mN (axial=1, E0list=e1,..,eN), mloc=m1,..,mk (axial=0: k orbitals with
 ///   Lz = m_j about every nucleus), or one 1s per nucleus (axial=0, N nuclei);
@@ -210,6 +210,7 @@ int main(int argc, char** argv) {
         gp.h = get(args, "h", 0.25);                       // proper-time step in u = ln(tau)
         gp.tmin = get(args, "tmin", 1e-8);                 // smallest proper-time node
         gp.tmax_factor = get(args, "tmax_factor", 45.0);   // tau_max = tmax_factor / (|B|/2 - E)
+        gp.qbatch = long(get(args, "qbatch", 64));         // q-modes per vector operation (0: all at once)
         const MagneticGreen G(world, B, gp);
         if (world.rank() == 0) {
             print("magneticatom: B =", B, " atoms =", atoms, " k =", k, " thresh =", thresh, " eprec =", eprec,

@@ -60,6 +60,7 @@ struct MagneticGreenParams {
     double rtaper = 0.0;        ///< width of that erfc taper; 0 -> min(0.5, rcut/4)
     double dphi = 3.0;          ///< refine f until the phase B x y/2 varies by <= dphi per box (before the multiply)
     double fq_tol = 0.0;        ///< drop modes with ||F_q|| < fq_tol*||f||; 0 -> 0.01*thresh
+    long qbatch = 64;           ///< q-modes processed together (one fence per step and batch); 0 -> all
     bool verbose = false;
 };
 
@@ -104,8 +105,11 @@ public:
         // then local in y, as the sum is (otherwise each term fills the cell at the q-wavelength)
         const double yw = rcut_ + 9 * rtaper_, rt = rtaper_;
         for (double q : q_) {
-            planewave_.push_back(complex_factory_1d(world_).functor(
-                [q](const coord_1d& r) { return std::exp(double_complex(0.0, q * r[0])); }));
+            // e^{-iqy} of step 2, kept redundant (the state project_out reads) for the whole run
+            complex_function_1d pw = complex_factory_1d(world_).functor(
+                [q](const coord_1d& r) { return std::exp(double_complex(0.0, q * r[0])); });
+            planewave_conj_.push_back(conj(pw));
+            planewave_conj_.back().change_tree_state(redundant);
             planewave_win_.push_back(complex_factory_1d(world_).functor([q, yw, rt](const coord_1d& r) {
                 return 0.5 * std::erfc((std::abs(r[0]) - yw) / rt) * std::exp(double_complex(0.0, q * r[0]));
             }));
@@ -247,6 +251,25 @@ private:
         f.truncate();
     }
 
+    /// step 2 for the modes j0..j1-1: F_q(x, z) = int dy e^{-iqy} fxzy(x, z, y), as Function::project_out
+    /// (fxzy reconstructed, e^{-iqy} redundant), but with one fence for all modes instead of three per mode
+    std::vector<complex_function_2d> project_out_y(const complex_function_3d& fxzy, std::size_t j0, std::size_t j1) const {
+        std::vector<complex_function_2d> F;
+        for (std::size_t j = j0; j < j1; ++j)
+            F.push_back(FunctionFactory<double_complex, 2>(world_).k(planewave_conj_[j].k())
+                        .thresh(planewave_conj_[j].thresh()).nofence());
+        world_.gop.fence();
+        for (std::size_t j = j0; j < j1; ++j)
+            fxzy.get_impl()->project_out(F[j - j0].get_impl().get(), planewave_conj_[j].get_impl().get(), 1, false);
+        world_.gop.fence();
+        for (auto& r : F) {
+            r.get_impl()->trickle_down(false);
+            r.get_impl()->set_tree_state(reconstructed);
+        }
+        world_.gop.fence();
+        return F;
+    }
+
     complex_function_3d apply(const complex_function_3d& f, const std::vector<Node>& nodes, double s0) const {
         const double thresh = FunctionDefaults<3>::get_thresh();
         const double fq_tol = (p_.fq_tol > 0 ? p_.fq_tol : 0.01 * thresh) * f.norm2();
@@ -257,47 +280,80 @@ private:
         complex_function_3d ft = copy(f);
         multiply_phase(ft, -1.0);
         complex_function_3d fxzy = mapdim(ft, std::vector<long>{0, 2, 1});
+        fxzy.reconstruct();
 
+        // the modes are processed in batches: every step below is one vector operation over the batch
+        // with a single fence (one mode at a time leaves most threads idle: a 2D function is too small
+        // to fill the task pool); per mode the arithmetic is the same as one mode at a time
         std::vector<complex_function_2d> left;
         std::vector<complex_function_1d> right;
         long napplied = 0, nskip = 0;
-        for (std::size_t j = 0; j < q_.size(); ++j) {
+        const double wall0 = wall_time();
+        double wall_proj = 0.0;
+        const std::size_t nq = q_.size();
+        const std::size_t batch = p_.qbatch > 0 ? std::size_t(p_.qbatch) : nq;
+        for (std::size_t j0 = 0; j0 < nq; j0 += batch) {
+            const std::size_t j1 = std::min(nq, j0 + batch);
             // step 2: F_q(x, z) = int dy e^{-iqy} ft   (project_out does not conjugate)
-            complex_function_2d Fq = fxzy.project_out(conj(planewave_[j]), 1);
-            const double nFq = Fq.norm2();
-            if (nFq < fq_tol) continue;
+            const double wp = wall_time();
+            std::vector<complex_function_2d> Fall = project_out_y(fxzy, j0, j1);
+            const std::vector<double> nall = norm2s(world_, Fall);
+            wall_proj += wall_time() - wp;
+            std::vector<std::size_t> jq;
+            std::vector<complex_function_2d> F;
+            std::vector<double> nF;
+            for (std::size_t i = 0; i < Fall.size(); ++i) {
+                if (nall[i] < fq_tol) continue;
+                jq.push_back(j0 + i);
+                F.push_back(Fall[i]);
+                nF.push_back(nall[i]);
+            }
+            Fall.clear();
+            if (F.empty()) continue;
             // step 3
-            const double q = q_[j];
-            complex_function_2d Psi = s0 * Fq;
-            Psi.compress();
+            std::vector<complex_function_2d> Psi(F.size());
+            for (std::size_t i = 0; i < F.size(); ++i) Psi[i] = mul(s0, F[i], false);
+            world_.gop.fence();
+            compress(world_, Psi);
             for (std::size_t k = 0; k < nodes.size(); ++k) {
                 const double m = nodes[k].m, b = nodes[k].b, d = nodes[k].d;
-                auto expo = [m, b, d, q](double x) { return m * x * x + b * q * x + d * q * q; };
-                double emin = std::min(expo(lo_), expo(hi_));
-                if (m > 0) {
-                    const double xs = -b * q / (2 * m);
-                    if (xs > lo_ && xs < hi_) emin = std::min(emin, expo(xs));
+                std::vector<real_function_2d> g;
+                std::vector<complex_function_2d> Fk, Pk;
+                for (std::size_t i = 0; i < F.size(); ++i) {
+                    const double q = q_[jq[i]];
+                    auto expo = [m, b, d, q](double x) { return m * x * x + b * q * x + d * q * q; };
+                    double emin = std::min(expo(lo_), expo(hi_));
+                    if (m > 0) {
+                        const double xs = -b * q / (2 * m);
+                        if (xs > lo_ && xs < hi_) emin = std::min(emin, expo(xs));
+                    }
+                    // ||g K g F|| <= max|g|^2 ||K||_1 ||F||, ||K||_1 = sqrt(pi/c) sqrt(2 pi tau)
+                    const double log_bound = nodes[k].log_w + 0.5 * (std::log(constants::pi) - nodes[k].log_c)
+                                           + 0.5 * std::log(2 * constants::pi * nodes[k].tau) - 2.0 * emin + std::log(nF[i]);
+                    if (log_bound < std::log(fq_tol / nodes.size())) { ++nskip; continue; }
+                    ++napplied;
+                    g.push_back(real_factory_2d(world_).functor(
+                        [expo](const coord_2d& r) { return std::exp(-expo(r[0])); }).nofence());
+                    Fk.push_back(F[i]);
+                    Pk.push_back(Psi[i]);     // shares the implementation: gaxpy below updates Psi[i]
                 }
-                // ||g K g F|| <= max|g|^2 ||K||_1 ||F||, ||K||_1 = sqrt(pi/c) sqrt(2 pi tau)
-                const double log_bound = nodes[k].log_w + 0.5 * (std::log(constants::pi) - nodes[k].log_c)
-                                       + 0.5 * std::log(2 * constants::pi * nodes[k].tau) - 2.0 * emin + std::log(nFq);
-                if (log_bound < std::log(fq_tol / nodes.size())) { ++nskip; continue; }
-                ++napplied;
-                real_function_2d g = real_factory_2d(world_).functor(
-                    [expo](const coord_2d& r) { return std::exp(-expo(r[0])); });
-                complex_function_2d t = g * Fq;
-                t = madness::apply(*ops[k], t);
-                t = g * t;
-                t.compress();
-                Psi.gaxpy(1.0, t, std::exp(nodes[k].log_w));
+                if (g.empty()) continue;
+                world_.gop.fence();
+                std::vector<complex_function_2d> t = mul(world_, g, Fk);
+                t = madness::apply(world_, *ops[k], t);
+                t = mul(world_, g, t);
+                compress(world_, t);
+                gaxpy(world_, 1.0, Pk, std::exp(nodes[k].log_w), t);
             }
-            Psi.truncate();
-            left.push_back(Psi);
-            right.push_back(planewave_win_[j]);
+            truncate(world_, Psi);
+            for (std::size_t i = 0; i < Psi.size(); ++i) {
+                left.push_back(Psi[i]);
+                right.push_back(planewave_win_[jq[i]]);
+            }
         }
         if (p_.verbose && world_.rank() == 0)
             print("MagneticGreen: kept", left.size(), "of", q_.size(), "modes, applied", napplied,
-                  "(node, q) terms, skipped", nskip);
+                  "(node, q) terms, skipped", nskip, " wall: project", wall_proj, "s, modes", wall_time() - wall0, "s");
         // step 4, and (x, z, y) -> (x, y, z)
         complex_function_3d rxzy = hartree_product(left, right);
         complex_function_3d result = mapdim(rxzy, std::vector<long>{0, 2, 1});
@@ -311,7 +367,7 @@ private:
     Params p_;
     double lo_, hi_, period_, rcut_, rtaper_;
     std::vector<double> q_;
-    std::vector<complex_function_1d> planewave_, planewave_win_;
+    std::vector<complex_function_1d> planewave_conj_, planewave_win_;
 };
 
 }  // namespace madness
