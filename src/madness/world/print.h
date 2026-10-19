@@ -40,6 +40,7 @@
 
 #include <type_traits>
 #include <iostream>
+#include <filesystem>
 #include <fstream>
 #include <complex>
 #include <list>
@@ -222,8 +223,13 @@ operator<<(std::ostream &s, const T (&v)[N]) {
     /// \tparam Ts Argument pack type for the items to be printed.
     /// \param[in] t The first item to be printed.
     /// \param[in] ts The remaining items to be printed in the argument pack.
+    /// \note \c ts are forwarding references, not \c const&: under C++23 ADL
+    ///    on a \c std argument also finds \c std::print, and \c const& would lose
+    ///    to its \c Args&& on that argument, making unqualified calls ambiguous.
+    ///    \c t stays \c const& (it competes only with the \c format_string
+    ///    parameter) so that a call with one argument resolves as before.
     template<typename T, typename... Ts>
-    void print(const T& t, const Ts&... ts) {
+    void print(const T& t, Ts&&... ts) {
         using madness::operators::operator<<;
         ScopedMutex<Mutex> safe(detail::printmutex);
         std::cout << t;
@@ -239,7 +245,7 @@ operator<<(std::ostream &s, const T (&v)[N]) {
     /// \param[in] t The first item to be printed.
     /// \param[in] ts The remaining items to be printed in the argument pack.
     template<typename T, typename... Ts>
-    void print_error(const T& t, const Ts&... ts) {
+    void print_error(const T& t, Ts&&... ts) {
         using madness::operators::operator<<;
         ScopedMutex<Mutex> safe(detail::printmutex);
         std::cerr << t;
@@ -247,29 +253,51 @@ operator<<(std::ostream &s, const T (&v)[N]) {
     }
 
 
-    /// RAII class to redirect cout to a file
+    /// RAII class to redirect cout to a file or to /dev/null
     struct io_redirect {
+        /// File writes <directory>/<filename>.<NNNNN>; Discard silences cout via /dev/null
+        enum class Mode { File, Discard };
+
         std::streambuf* stream_buffer_cout;
         static std::streambuf* stream_buffer_cout_default; ///< default stream buffer for cout, used to restore cout
         std::ofstream ofile;
+        Mode mode = Mode::File;
         bool debug = false;
 
-        io_redirect(const long task_number, std::string filename, bool debug = false) : debug(debug) {
+        /// \param directory  created if needed; empty means the current directory
+        io_redirect(Mode mode, const long task_number,
+                    std::string directory, std::string filename, bool debug = false)
+                : mode(mode), debug(debug) {
             stream_buffer_cout_default = std::cout.rdbuf();
-            constexpr std::size_t bufsize = 256;
-            char cfilename[bufsize];
-            std::snprintf(cfilename, bufsize, "%s.%5.5ld", filename.c_str(), task_number);
-            ofile = std::ofstream(cfilename);
-            if (debug) std::cout << "redirecting to file " << cfilename << std::endl;
+            if (mode == Mode::File) {
+                constexpr std::size_t bufsize = 512;
+                char cfilename[bufsize];
+                if (directory.empty()) {
+                    std::snprintf(cfilename, bufsize, "%s.%5.5ld", filename.c_str(), task_number);
+                } else {
+                    std::error_code ec;
+                    std::filesystem::create_directories(directory, ec);  // idempotent; races are benign
+                    std::snprintf(cfilename, bufsize, "%s/%s.%5.5ld",
+                                  directory.c_str(), filename.c_str(), task_number);
+                }
+                ofile = std::ofstream(cfilename);
+                if (debug) std::cout << "redirecting to file " << cfilename << std::endl;
+            } else {
+                ofile = std::ofstream("/dev/null");
+            }
             stream_buffer_cout = std::cout.rdbuf(ofile.rdbuf());
             std::cout.sync_with_stdio(true);
         }
+
+        /// a file in the current directory
+        io_redirect(const long task_number, std::string filename, bool debug = false)
+                : io_redirect(Mode::File, task_number, std::string(), std::move(filename), debug) {}
 
         ~io_redirect() {
             std::cout.rdbuf(stream_buffer_cout);
             ofile.close();
             std::cout.sync_with_stdio(true);
-            if (debug) std::cout << "redirecting back to cout" << std::endl;
+            if (debug and mode == Mode::File) std::cout << "redirecting back to cout" << std::endl;
         }
     };
 

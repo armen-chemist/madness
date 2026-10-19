@@ -38,8 +38,10 @@
 #include "funcdefaults.h"
 #include "tensor_json.hpp"
 #include <madness/world/worldmem.h>
+#include <madness/world/ranks_and_hosts.h>
 #include <madness.h>
 #include <madness/chem/SCF.h>
+#include <madness/chem/Restart.h>
 #include <madchem.h>
 
 #if defined(__has_include)
@@ -203,6 +205,7 @@ scf_data::scf_data() : iter(0) {
     e_data.insert({"e_nuclear", std::vector<double>(0)});
     e_data.insert({"e_coulomb", std::vector<double>(0)});
     e_data.insert({"e_pcm", std::vector<double>(0)});
+    e_data.insert({"e_disp", std::vector<double>(0)});
     e_data.insert({"e_xc", std::vector<double>(0)});
     e_data.insert({"e_nrep", std::vector<double>(0)});
     e_data.insert({"e_tot", std::vector<double>(0)});
@@ -230,8 +233,9 @@ void scf_data::add_gradient(const Tensor<double> &grad) {
     gradient = tensor_to_json(grad);
 }
 
-SCF::SCF(World& world, const CalculationParameters& param1, const Molecule& molecule)
-    : molecule(molecule), param(param1) {
+SCF::SCF(World& world, const CalculationParameters& param1, const Molecule& molecule,
+         const PCMParameters& pcm_param1)
+    : molecule(molecule), param(param1), pcm_param(pcm_param1) {
     PROFILE_MEMBER_FUNC(SCF);
 
     if (world.rank() == 0) {
@@ -243,10 +247,22 @@ SCF::SCF(World& world, const CalculationParameters& param1, const Molecule& mole
     world.gop.broadcast_serializable(param, 0);
     world.gop.broadcast_serializable(aobasis, 0);
 
+    // after the broadcast, so every rank derives the solvent from the same pcm_data;
+    // pure computation, so no second broadcast is needed
+    this->pcm_param.set_derived_values(param);
+
     if (param.print_level() > 2) print_timings = true;
 
     xc.initialize(param.xc(), !param.spin_restricted(), world, param.print_level() >= 10);
     //xc.plot();
+
+    // Constructed here, next to the functional it belongs to, and not lazily at
+    // the first energy evaluation: an unusable functional name for the D3
+    // parameter tables must abort before any work is done, and the ctor throws
+    // collectively (every rank runs it, none of it touches MPI).
+    dispersion = DispersionCorrection(param.dispersion(), param.xc(),
+                                      param.dispersion_functional(),
+                                      param.dispersion_atm());
 
     // Ensure we have enough basis functions to guess the requested
     // number of states ... a minimal basis for a closed-shell atom
@@ -257,6 +273,7 @@ SCF::SCF(World& world, const CalculationParameters& param1, const Molecule& mole
     FunctionDefaults<3>::set_cubic_cell(-param.L(), param.L());
     //set_protocol < 3 > (world, param.econv());
     FunctionDefaults<3>::set_truncate_mode(1);
+    FunctionDefaults<3>::set_debug(param.print_level() >= 10);
 
 }
 
@@ -282,19 +299,25 @@ void SCF::save_mos(World& world) {
     PROFILE_MEMBER_FUNC(SCF);
     auto archivename=param.prefix()+".restartdata";
     archive::ParallelOutputArchive<archive::BinaryFstreamOutputArchive> ar(world, archivename.c_str(), param.get<int>("nio"));
-    // IF YOU CHANGE ANYTHING HERE MAKE SURE TO UPDATE THIS VERSION NUMBER
-    /*
-     * After spin restricted
-      double L;
-      int k;
-      Molecule molecule;
-      std::string xc;
-      */
-    unsigned int version = 4;
-    ar & version;
-    ar & current_energy & param.spin_restricted();
-    ar & param.L() & FunctionDefaults<3>::get_k() & molecule & param.xc() & param.localize_method() & converged_for_thresh;
-    // Reorder so it doesn't affect orbital data
+
+    // The header layout lives in RestartMetadata (chem/Restart.h) -- do not
+    // open-code it here. Adding a field there is enough; this call and
+    // load_mos() below both follow.
+    RestartMetadata meta;
+    meta.current_energy = current_energy;
+    meta.spin_restricted = param.spin_restricted();
+    meta.L = param.L();
+    meta.k = FunctionDefaults<3>::get_k();
+    meta.molecule = molecule;
+    meta.xc = param.xc();
+    meta.localize = param.localize_method();
+    meta.converged_for_thresh = converged_for_thresh;
+    meta.converged_for_dconv = converged_for_dconv;
+    meta.representation = restart_representation;
+    meta.ncf = restart_ncf;
+    meta.eprec = molecule.parameters.eprec();
+    meta.madness_version = MADNESS_PACKAGE_VERSION;
+    meta.write(ar);
 
     ar & (unsigned int) (amo.size());
     ar & aeps & aocc & aset;
@@ -309,7 +332,10 @@ void SCF::save_mos(World& world) {
     // as no aoamo/aobmo overlap matrix can be computed
     if (param.nwfile() == "none") {
         tensorT Saoamo = matrix_inner(world, ao, amo);
-        tensorT Saobmo = (!param.spin_restricted()) ? matrix_inner(world, ao, bmo) : tensorT();
+        // no beta orbitals (nbeta == 0): matrix_inner refuses an empty vector, and load_mos expects ao.size() x 0
+        tensorT Saobmo = param.spin_restricted() ? tensorT()
+                       : bmo.empty()             ? tensorT(long(ao.size()), 0l)
+                                                 : matrix_inner(world, ao, bmo);
         if (world.rank() == 0) {
             archive::BinaryFstreamOutputArchive arao(param.prefix()+".restartaodata");
             arao << Saoamo << aeps << aocc << aset;
@@ -318,72 +344,67 @@ void SCF::save_mos(World& world) {
     }
 }
 
-void SCF::load_mos(World& world) {
+void SCF::load_mos(World& world, const bool allow_fewer) {
     PROFILE_MEMBER_FUNC(SCF);
     //        const double trantol = vtol / std::min(30.0, double(param.nalpha));
 
     bool needs_redo=false; // if we need to redo the orbitals, e.g. because of a change in k or thresh
-
-    // const double thresh = FunctionDefaults<3>::get_thresh();
-    bool spinrest = false;
 
     amo.clear();
     bmo.clear();
 
     archive::ParallelInputArchive<archive::BinaryFstreamInputArchive> ar(world, param.prefix()+".restartdata");
 
-    /*
-      File format:
-          unsigned int version;
-          double current energy;
-      bool spinrestricted --> if true only alpha orbitals are present
-      double L;
-      int k;
-      Molecule molecule;
-      std::string xc;
-      std::string localize;
-      double converged_for_thresh
-      unsigned int nmo_alpha;
-      Tensor<double> aeps;
-      Tensor<double> aocc;
-      vector<int> aset;
-      for i from 0 to nalpha-1:
-      .   Function<double,3> amo[i]
-      repeat for beta if !spinrestricted
-     */
-    // Local copies for a basic check
-    double L=0;
-    int k1=0;                    // Ignored for restarting, used in response only
-    double converged_for_thresh1=1.e10;
-    double current_energy1=1.e10;
-    unsigned int version = 4;// UPDATE THIS IF YOU CHANGE ANYTHING
-    unsigned int archive_version=0;
+    // The header, then one block of orbitals per spin. RestartMetadata::read
+    // accepts version 4 and 5, so archives written before the header carried a
+    // representation tag or converged_for_dconv still load; the fields they lack
+    // come back as "unknown"/1e10 rather than as a claim the archive never made.
+    RestartMetadata meta;
+    meta.read(ar);
 
-    ar & archive_version;
-
-    // Some basic checks
-    std::string errmsg= "incompatible archive versions: "+std::to_string(archive_version) +
-                     " vs. input parameter: "+std::to_string(version);
-    MADNESS_CHECK_THROW(archive_version ==version, errmsg.c_str());
-
-    // LOTS OF LOGIC MISSING HERE TO CHANGE OCCUPATION NO., SET,
-    // EPS, SWAP, ... sigh
-    ar & current_energy1 & spinrest;
-    // Reorder
-    Molecule mol;
-    ar & L & k1 & mol& param.xc() & param.localize_method() & converged_for_thresh1;
-
-
-    // more basic checks
-    errmsg= "inconsistent box size in restartdata file: "+ std::to_string(L) +
-                     " vs. input parameter: "+std::to_string(param.L());
-    MADNESS_CHECK_THROW(L==param.L(), errmsg.c_str());
-
-    if (not (mol == molecule)) {
+    // NOTE: xc and localize are deliberately NOT copied back into param. The old
+    // code appeared to do so with `ar & param.xc()`, but those getters return by
+    // value and the input operator& takes const T&, so every one of those reads
+    // landed in a temporary and was discarded. Making it look intentional here
+    // rather than reviving a behaviour nobody has depended on.
+    if (not meta.representation_matches(restart_representation)) {
+        // Print before throwing: MadnessException keeps the char* it is handed
+        // without copying (world/madness_exception.h), so a c_str() from a local
+        // string dangles by the time anything prints it -- the message comes out
+        // empty. The detail is the whole value of this check, so emit it here.
         if (world.rank() == 0) {
-            print("Warning: Molecule in archive does not match the current molecule");
-            print("Restarting from this molecular geometry");
-            molecule.print();
+            print("ERROR: restartdata holds '"+madness::to_string(meta.representation)+
+                  "' functions, but this calculation wants '"+madness::to_string(restart_representation)+
+                  "'. moldft orbitals (psi) and nemo orbitals (F = psi/R) are not");
+            print("interchangeable; point the run at the right archive, or set a");
+            print("different prefix so the two engines stop sharing a filename.");
+        }
+        MADNESS_EXCEPTION("restartdata representation does not match this calculation", 1);
+    }
+
+    // more basic checks. Print before throwing: MadnessException stores the bare
+    // `const char*` without copying it (madness_exception.h), so a c_str() from a
+    // local std::string dangles and the message comes out empty -- which is what
+    // this check did until now.
+    if (meta.L!=param.L()) {
+        if (world.rank() == 0)
+            print("inconsistent box size in restartdata file:", meta.L,
+                  "vs. input parameter:", param.L());
+        MADNESS_EXCEPTION("inconsistent box size in restartdata file", 1);
+    }
+
+    // compare_geometry, not Molecule::operator==: the latter also compares rcut
+    // and the whole MolecularParameters object, including each parameter's
+    // precedence, so a deserialized molecule differs from a freshly parsed one
+    // even when every atom sits at the same place -- and this warning fired on
+    // every restart. What matters here is the atoms, in order.
+    const Molecule& mol = meta.molecule;
+    if (compare_geometry(mol, molecule) != GeometryMatch::same) {
+        if (world.rank() == 0) {
+            print("Warning: molecule in archive does not match the requested molecule");
+            print("using the orbitals as a guess for the requested geometry; the");
+            print("geometry stored in the archive was");
+            mol.print();
         }
     }
 
@@ -409,7 +430,7 @@ void SCF::load_mos(World& world) {
 
     // load orbitals
     MolecularOrbitals<double,3> amos, bmos;
-    amos.load_mos(ar, molecule, param.nmo_alpha());
+    amos.load_mos(ar, molecule, param.nmo_alpha(), allow_fewer);
     amo= amos.get_mos();
     aocc=amos.get_occ();
     aeps=amos.get_eps();
@@ -422,7 +443,7 @@ void SCF::load_mos(World& world) {
     check_and_set_thresh(amo);
 
     if (param.have_beta()) {
-        bmos.load_mos(ar, molecule, param.nmo_beta());
+        bmos.load_mos(ar, molecule, param.nmo_beta(), allow_fewer);
         bmo= bmos.get_mos();
         bocc=bmos.get_occ();
         beps=bmos.get_eps();
@@ -431,72 +452,131 @@ void SCF::load_mos(World& world) {
         check_and_set_thresh(bmo);
     }
 
+    // virtuals the archive lacks start from the atomic guess, so the stored
+    // convergence claim no longer describes what we hold; the energy still does,
+    // it belongs to the occupied orbitals alone
+    const bool padded = pad_virtuals_from_guess(world);
+
     // if everything worked out, set convergence parameters
     if (needs_redo) {
+        // reprojected in k or re-truncated, so the stored convergence no longer
+        // describes the orbitals we now hold
         converged_for_thresh=1.e10;
+        converged_for_dconv=1.e10;
         current_energy=1.e10;
     } else {
-        converged_for_thresh= converged_for_thresh1;
-        current_energy=current_energy1;
+        converged_for_thresh= padded ? 1.e10 : meta.converged_for_thresh;
+        converged_for_dconv= padded ? 1.e10 : meta.converged_for_dconv;
+        current_energy=meta.current_energy;
     }
-    molecule=mol;
+    // NB: the requested geometry wins. Restarting must never silently move the
+    // molecule to the one stored in the archive -- during a geometry
+    // optimization that would compute the energy at a geometry the optimizer
+    // did not ask for.
 }
 
 
-/// get the initial orbitals for a calculation
+/// get the initial orbitals for a calculation, from the source the plan names
 
-/// the ordering of initial orbitals is
-/// 1. from restartdata
-/// 2. from aobasis
-/// 3. from NWChem
-/// 4. from initial_guess()
-void SCF::get_initial_orbitals(World& world) {
+/// The precedence ladder that used to live here is gone: which source to use is
+/// decided once, up front, by plan_restart() (RestartPlan.h), from the archive's
+/// header rather than from file existence plus a handful of booleans. All this
+/// does is carry the decision out.
+///
+/// The one thing that cannot be decided from a header is whether the orbitals
+/// themselves load. If they do not, an automatic plan falls back to the initial
+/// guess -- loudly, since a header that parsed and a body that did not is a
+/// damaged archive -- while an explicitly requested source throws, because a
+/// silent fresh start is exactly what someone asking to resume a long run does
+/// not want.
+void SCF::get_initial_orbitals(World& world, RestartPlan& plan) {
 
-    auto get_initial_orbitals1=[&](World& world, std::string fromwhere) {
-        if (world.rank()==0) print("try restarting calculation from "+fromwhere);
-        bool success=false;
-        if (fromwhere=="restartdata") {
-            try {
-                load_mos(world);
-                success=true;
-            } catch (...) {
-                // could not load MOs, but user has requested so explicitly
-                if (param.restart()) {
-                    MADNESS_EXCEPTION("No initial orbitals found in restartdata",1);
-                }
-                return false;
-            }
-            MADNESS_CHECK_THROW(amo.size()==size_t(param.nalpha()),"inconsistent restart data");
+    if (plan.iterate) {
+        converged_for_thresh = 1.e10;
+        converged_for_dconv = 1.e10;
+        current_energy = 1.e10;
+    }
 
-        } else if (fromwhere=="restartao") {
-            reset_aobasis("sto-3g");
-            ao = project_ao_basis(world, aobasis);
-            success=restart_aos(world);
-
-        } else if (fromwhere=="NWChem") {
-            initial_guess_from_nwchem(world);
-            // will throw if it doesn't work
-            success=true;
-
-        } else if (fromwhere=="initial_guess") {
-            reset_aobasis(param.aobasis());
-            ao = project_ao_basis(world, aobasis);
-            make_nuclear_potential(world);
-            initial_guess(world);
-            success=true;
-
-        } else {
-            throw std::runtime_error("Unknown source of initial orbitals: "+fromwhere);
-        }
-        if (success and world.rank()==0) print("   --- successfully started from ",fromwhere);
-        return success;
+    auto from_initial_guess=[&](World& world) {
+        if (world.rank()==0) print("starting from the atomic initial guess");
+        reset_aobasis(param.aobasis());
+        ao = project_ao_basis(world, aobasis);
+        make_nuclear_potential(world);
+        initial_guess(world);
     };
 
-    bool success=false;
-    if (!success and param.restart()) success=get_initial_orbitals1(world,"restartdata");
-    if (!success and param.restartao()) success=get_initial_orbitals1(world,"restartao");
-    if (!success and param.nwfile()!="none") success=get_initial_orbitals1(world,"NWChem");
-    if (!success) get_initial_orbitals1(world,"initial_guess");
+    auto load_from=[&](World& world, const RestartSource source) {
+        if (world.rank()==0) print("reading initial orbitals from "+madness::to_string(source));
+        if (source==RestartSource::restartdata) {
+            // pad a short archive only when the run iterates
+            load_mos(world, plan.iterate);
+            // load_mos reads nmo_alpha orbitals (occupied + virtuals), so this
+            // must compare against nmo_alpha -- comparing against nalpha made
+            // every restart with nvalpha>0 throw.
+            MADNESS_CHECK_THROW(amo.size()==size_t(param.nmo_alpha()),"inconsistent restart data");
+
+        } else if (source==RestartSource::restartao) {
+            reset_aobasis("sto-3g");
+            ao = project_ao_basis(world, aobasis);
+            if (not restart_aos(world))
+                MADNESS_EXCEPTION("could not read the AO projections from restartaodata",1);
+
+        } else if (source==RestartSource::nwchem) {
+            initial_guess_from_nwchem(world);   // throws if it does not work
+
+        } else {
+            MADNESS_EXCEPTION("unhandled restart source",1);
+        }
+    };
+
+    if (not plan.needs_load()) {
+        from_initial_guess(world);
+        return;
+    }
+
+    if (plan.mode!=RestartMode::automatic) {
+        load_from(world,plan.source);        // no fallback: the user was explicit
+        return;
+    }
+
+    std::string errmsg;
+    int loaded=1;
+    try {
+        load_from(world,plan.source);
+    } catch (const std::exception& e) {
+        loaded=0;
+        errmsg=(e.what()!=nullptr) ? e.what() : "no message";
+    }
+
+    // Agree across ranks before doing anything else. A rank that loaded while
+    // another fell back would build a different set of Functions from here on and
+    // the two would diverge on the next collective -- a hang, which is worse than
+    // a wrong answer because it leaves nothing to debug. This cannot rescue a
+    // failure that happened *inside* a collective (the ranks are already out of
+    // step by then), but it does keep an asymmetric read failure from spreading.
+    world.gop.min(loaded);
+
+    if (loaded==0) {
+        if (world.rank()==0) {
+            print("WARNING: could not read the initial orbitals from",
+                  madness::to_string(plan.source));
+            if (not errmsg.empty()) print("WARNING:", errmsg);
+            print("WARNING: falling back to the atomic initial guess. If this archive"
+                  " should be readable, that is a bug or a damaged file.");
+        }
+        // The plan was built on the assumption that those orbitals would load. They
+        // did not, so the rungs it wanted to skip are not covered by anything: an
+        // atomic guess dropped straight onto the finest rung is both wasteful and a
+        // poor starting point. Start over at rung 0.
+        plan.source=RestartSource::initial_guess;
+        plan.iterate=true;
+        plan.protocol_start=0;
+        // and put FunctionDefaults back on rung 0 before building the guess, so the
+        // orbitals and k agree: the caller set the protocol to the rung the plan
+        // wanted to resume at, and nothing reprojects the first rung it runs.
+        set_protocol<3>(world,param.protocol()[0]);
+        from_initial_guess(world);
+    }
 }
 
 
@@ -505,9 +585,17 @@ void SCF::do_plots(World& world) {
     START_TIMER(world);
 
     std::vector<long> npt(3, static_cast<long>(param.get<int>("npt_plot")));
+    const bool cube      = param.get<bool>("plotcube");
+    const int  npt_cube  = param.get<int>("npt_plot");
+    const auto cube_hdr  = molecule.cubefile_header();
 
-    if (param.plot_cell().size() == 0)
-        param.plot_cell() = copy(FunctionDefaults<3>::get_cell());
+    // plot_cell() returns a COPY (empty when the knob is unset). Assigning to
+    // it would modify a discarded temporary, leaving plotdx with an empty cell
+    // and a null-pointer deref (mraimpl.h plotdx, cell(d,0)). Build a local
+    // cell and pass it to every plot below.
+    Tensor<double> cell = param.plot_cell();
+    if (cell.size() == 0)
+        cell = copy(FunctionDefaults<3>::get_cell());
 
     if (param.get<bool>("plotdens") || param.get<bool>("plotcoul")) {
         functionT rho;
@@ -519,16 +607,19 @@ void SCF::do_plots(World& world) {
             functionT rhob = make_density(world, bocc, bmo);
             functionT rho_spin = rho - rhob;
             rho += rhob;
-            plotdx(rho_spin, "spin_density.dx", param.plot_cell(), npt, true);
+            plotdx(rho_spin, "spin_density.dx", cell, npt, true);
+            if (cube) plot_cubefile<3>(world, rho_spin, "spin_density.cube", cube_hdr, npt_cube);
 
         }
-        plotdx(rho, "total_density.dx", param.plot_cell(), npt, true);
+        plotdx(rho, "total_density.dx", cell, npt, true);
+        if (cube) plot_cubefile<3>(world, rho, "total_density.cube", cube_hdr, npt_cube);
         if (param.get<bool>("plotcoul")) {
             real_function_3d vnuc = potentialmanager->vnuclear();
             functionT vlocl = vnuc + apply(*coulop, rho);
             vlocl.truncate();
             vlocl.reconstruct();
-            plotdx(vlocl, "coulomb.dx", param.plot_cell(), npt, true);
+            plotdx(vlocl, "coulomb.dx", cell, npt, true);
+            if (cube) plot_cubefile<3>(world, vlocl, "coulomb.cube", cube_hdr, npt_cube);
         }
     }
 
@@ -537,11 +628,19 @@ void SCF::do_plots(World& world) {
         char fname[bufsize];
         if (i < param.nalpha()) {
             snprintf(fname,bufsize, "amo-%5.5d.dx", i);
-            plotdx(amo[i], fname, param.plot_cell(), npt, true);
+            plotdx(amo[i], fname, cell, npt, true);
+            if (cube) {
+                snprintf(fname,bufsize, "amo-%5.5d.cube", i);
+                plot_cubefile<3>(world, amo[i], fname, cube_hdr, npt_cube);
+            }
         }
         if (!param.spin_restricted() && i < param.nbeta()) {
             snprintf(fname,bufsize, "bmo-%5.5d.dx", i);
-            plotdx(bmo[i], fname, param.plot_cell(), npt, true);
+            plotdx(bmo[i], fname, cell, npt, true);
+            if (cube) {
+                snprintf(fname,bufsize, "bmo-%5.5d.cube", i);
+                plot_cubefile<3>(world, bmo[i], fname, cube_hdr, npt_cube);
+            }
         }
     }
     END_TIMER(world, "plotting");
@@ -673,12 +772,17 @@ distmatT SCF::kinetic_energy_matrix(World& world, const vecfuncT& v) const {
     START_TIMER(world);
     reconstruct(world, v);
     END_TIMER(world, "KEmat reconstruct");
+    // these operators serve only this matrix, which is the many-tree case the pool submission helps
+    for (int axis = 0; axis < 3; ++axis) gradop[axis]->parallel_submit_ = true;
     START_TIMER(world);
+    stage_halo(world, gradop, v);
     vecfuncT dvx = apply(world, *(gradop[0]), v, false);
     vecfuncT dvy = apply(world, *(gradop[1]), v, false);
     vecfuncT dvz = apply(world, *(gradop[2]), v, false);
     world.gop.fence();
     END_TIMER(world, "KEmat differentiate");
+    // all three axes' halos are live until here, since all three are applied before the fence above
+    clear_halo(v);
     START_TIMER(world);
     compress(world, dvx, false);
     compress(world, dvy, false);
@@ -719,7 +823,10 @@ bool SCF::restart_aos(World& world) {
             print("\nRestarting from AO projections on disk\n");
         }
         catch (...) {
-            // print("\nAO restart file open/reading failed --- starting from atomic guess instead\n");
+            // Say so. This used to be silent (the print was commented out), which
+            // made a wrong prefix or a truncated AO file indistinguishable from
+            // "there was nothing to read".
+            print("\nreading", param.prefix()+".restartaodata", "failed\n");
             OK = false;
         }
     }
@@ -871,31 +978,37 @@ void SCF::initial_guess_from_nwchem(World& world) {
     make_nuclear_potential(world);
     real_function_3d vnuc = potentialmanager->vnuclear();
 
-    // Pull out occupation numbers
-    // NWChem orders occupied orbitals to be first
-    aocc = tensorT(param.nalpha());
-    for (int i = 0; i < param.nalpha(); i++) {
-        // NWChem stores closed shell calculations
-        // as the alpha orbital set with occupation 2.
-        // Verifying no fractional occupations.
-        MADNESS_ASSERT(nwchem.occupancies[i] == 2.0 or nwchem.occupancies[i] == 1.0);
-
-        // Madness instead stores 2 identical sets
-        // (alpha and beta) with occupation 1
-        aocc[i] = 1.0;
+    // Pull out occupation numbers. NWChem orders occupied orbitals first, so
+    // the first nmo_alpha MOs are the occupieds followed by the lowest virtuals.
+    MADNESS_CHECK_THROW(nwchem.occupancies.size() >= size_t(param.nmo_alpha()) and
+                        nwchem.energies.size() >= size_t(param.nmo_alpha()),
+                        "NWChem file holds fewer alpha MOs than requested (nalpha + nvalpha)");
+    aocc = tensorT(param.nmo_alpha());
+    for (int i = 0; i < param.nmo_alpha(); i++) {
+        // NWChem stores closed shell calculations as the alpha orbital set with
+        // occupation 2; MADNESS stores two identical sets with occupation 1.
+        // No fractional occupations, and nothing occupied beyond nalpha.
+        if (i < param.nalpha()) {
+            MADNESS_CHECK_THROW(nwchem.occupancies[i] == 2.0 or nwchem.occupancies[i] == 1.0,
+                                "NWChem alpha occupation is neither 1 nor 2 within nalpha");
+            aocc[i] = 1.0;
+        } else {
+            MADNESS_CHECK_THROW(nwchem.occupancies[i] == 0.0,
+                                "NWChem alpha orbital beyond nalpha is occupied");
+        }
     }
 
     // Pull out energies
-    aeps = tensorT(param.nalpha());
-    for (int i = 0; i < param.nalpha(); i++) {
+    aeps = tensorT(param.nmo_alpha());
+    for (int i = 0; i < param.nmo_alpha(); i++) {
         aeps[i] = nwchem.energies[i];
     }
 
     // Create the orbitals as madness functions
     // Just create the vector of atomic orbitals
     // and use the vector of MO coefficients and
-    // the transform function, then take only
-    // the occupied orbitals.
+    // the transform function, then take the first
+    // nmo_alpha orbitals.
     if (world.rank() == 0 && param.print_level() > 3)
         print("\nCreating MADNESS functions from the NWChem orbitals.");
 
@@ -923,13 +1036,14 @@ void SCF::initial_guess_from_nwchem(World& world) {
     // Transform ao's now
     vector_real_function_3d temp = transform(world, temp1, nwchem.MOs, vtol, true);
 
-    // Now save all aos and only the occupied amo
+    // Now save all aos and the first nmo_alpha amo
+    MADNESS_CHECK_THROW(temp.size() >= size_t(param.nmo_alpha()),
+                        "NWChem file holds fewer alpha MOs than requested (nalpha + nvalpha)");
     for (unsigned int i = 0; i < temp1.size(); i++) {
         // Save all AOs
         ao.push_back(copy(temp1[i]));
 
-        // Only save occupied AMOs
-        if (nwchem.occupancies[i] > 0) {
+        if (i < unsigned(param.nmo_alpha())) {
             amo.push_back(copy(temp[i]));
         }
     }
@@ -944,28 +1058,36 @@ void SCF::initial_guess_from_nwchem(World& world) {
     // Now for betas
     if (param.nbeta() && !param.spin_restricted()) {
 
-        // Pull out occupation numbers
-        // NWChem orders occupied orbitals to be first
-        bocc = tensorT(param.nbeta());
-        for (int i = 0; i < param.nbeta(); i++) {
-            MADNESS_ASSERT(nwchem.beta_occupancies[i] == 1.0);
-            bocc[i] = 1.0;
+        // Pull out occupation numbers, as for alpha
+        MADNESS_CHECK_THROW(nwchem.beta_occupancies.size() >= size_t(param.nmo_beta()) and
+                            nwchem.beta_energies.size() >= size_t(param.nmo_beta()),
+                            "NWChem file holds fewer beta MOs than requested (nbeta + nvbeta)");
+        bocc = tensorT(param.nmo_beta());
+        for (int i = 0; i < param.nmo_beta(); i++) {
+            if (i < param.nbeta()) {
+                MADNESS_CHECK_THROW(nwchem.beta_occupancies[i] == 1.0,
+                                    "NWChem beta occupation is not 1 within nbeta");
+                bocc[i] = 1.0;
+            } else {
+                MADNESS_CHECK_THROW(nwchem.beta_occupancies[i] == 0.0,
+                                    "NWChem beta orbital beyond nbeta is occupied");
+            }
         }
 
         // Pull out energies
-        beps = tensorT(param.nbeta());
-        for (int i = 0; i < param.nbeta(); i++) {
+        beps = tensorT(param.nmo_beta());
+        for (int i = 0; i < param.nmo_beta(); i++) {
             beps[i] = nwchem.beta_energies[i];
         }
 
         // Transform ao's now
         temp = transform(world, temp1, nwchem.beta_MOs, vtol, true);
 
-        // Now only take the occupied bmo
-        for (unsigned int i = 0; i < temp1.size(); i++) {
-            if (nwchem.beta_occupancies[i] > 0) {
-                bmo.push_back(copy(temp[i]));
-            }
+        // Now take the first nmo_beta bmo
+        MADNESS_CHECK_THROW(temp.size() >= size_t(param.nmo_beta()),
+                            "NWChem file holds fewer beta MOs than requested (nbeta + nvbeta)");
+        for (unsigned int i = 0; i < std::min(temp1.size(), size_t(param.nmo_beta())); i++) {
+            bmo.push_back(copy(temp[i]));
         }
 
         // Clean up
@@ -982,10 +1104,14 @@ void SCF::initial_guess_from_nwchem(World& world) {
 }
 
 
-void SCF::initial_guess(World& world) {
+void SCF::initial_guess_ao_eigenvectors(World& world, tensorT& c, tensorT& e) {
     PROFILE_MEMBER_FUNC(SCF);
     START_TIMER(world);
-    MADNESS_CHECK_THROW(not param.restart(),"no restart in SCF::initial_guess");
+    // No guard on `restart` any more: reaching the atomic guess is a legitimate
+    // outcome of any restart mode except the explicit ones, which throw rather
+    // than fall back (see SCF::get_initial_orbitals). The nwchem guard stays --
+    // with an nwfile named, `aobasis` was read from that file (SCF.cc, the ctor),
+    // so an atomic guess here would be built in the wrong basis.
     MADNESS_CHECK_THROW(param.nwfile()=="none","no nwchem in SCF::initial_guess");
 
     // recalculate initial guess density matrix without core orbitals
@@ -1151,7 +1277,6 @@ void SCF::initial_guess(World& world) {
     vpsi.clear();
     tensorT fock = kinetic + potential;
     fock = 0.5 * (fock + transpose(fock));
-    tensorT c, e;
 
     //debug printing
     /*double ep = 0.0;
@@ -1182,6 +1307,14 @@ void SCF::initial_guess(World& world) {
     //   print(c);
     // }
 
+}
+
+
+void SCF::initial_guess(World& world) {
+    PROFILE_MEMBER_FUNC(SCF);
+    tensorT c, e;
+    initial_guess_ao_eigenvectors(world, c, e);
+
     START_TIMER(world);
     compress(world, ao);
 
@@ -1190,6 +1323,10 @@ void SCF::initial_guess(World& world) {
         ncore = molecule.n_core_orb_all();
     }
 
+    // The constructor checked the basis size against the input nmo; the virtual
+    // step-down may have raised nmo since.
+    MADNESS_CHECK_THROW(size_t(ncore + std::max(param.nmo_alpha(), param.nmo_beta())) <= ao.size(),
+                        "too few AO basis functions for the requested number of orbitals");
     amo = transform(world, ao, c(_, Slice(ncore, ncore + param.nmo_alpha() - 1)), vtol, true);
     truncate(world, amo);
     normalize(world, amo);
@@ -1217,6 +1354,49 @@ void SCF::initial_guess(World& world) {
     }
     END_TIMER(world, "guess orbital grouping");
 }
+
+bool SCF::pad_virtuals_from_guess(World& world) {
+    PROFILE_MEMBER_FUNC(SCF);
+    const size_t na = amo.size(), nb = bmo.size();
+    const bool pad_a = na < size_t(param.nmo_alpha());
+    const bool pad_b = param.have_beta() && nb < size_t(param.nmo_beta());
+    if (!pad_a && !pad_b) return false;
+    MADNESS_CHECK_THROW(na >= size_t(param.nalpha()) && (!param.have_beta() || nb >= size_t(param.nbeta())),
+                        "restart archive holds fewer orbitals than are occupied");
+    if (world.rank() == 0 && param.print_level() > 1)
+        printf("padding %ld alpha and %ld beta virtuals from the atomic guess\n",
+               pad_a ? long(param.nmo_alpha() - na) : 0L, pad_b ? long(param.nmo_beta() - nb) : 0L);
+
+    reset_aobasis(param.aobasis());
+    ao = project_ao_basis(world, aobasis);
+    make_nuclear_potential(world);
+    tensorT c, e;
+    initial_guess_ao_eigenvectors(world, c, e);
+    const size_t ncore = (molecule.parameters.core_type() != "none") ? molecule.n_core_orb_all() : 0;
+
+    // Append the guess eigenvectors above the loaded block and orthogonalize them
+    // against the loaded orbitals, which orthonormalize(nocc) leaves untouched.
+    auto pad = [&](vecfuncT& mo, tensorT& eps, tensorT& occ, std::vector<int>& set, const size_t nmo) {
+        const size_t nload = mo.size();
+        if (nload >= nmo) return;
+        MADNESS_CHECK_THROW(ncore + nmo <= ao.size(), "too few AO basis functions for the requested number of orbitals");
+        MADNESS_CHECK_THROW(size_t(eps.size()) >= nload && size_t(occ.size()) >= nload, "restart archive eps/occ shorter than its orbitals");
+        vecfuncT guess = transform(world, ao, c(_, Slice(ncore + nload, ncore + nmo - 1)), vtol, true);
+        mo.insert(mo.end(), guess.begin(), guess.end());
+        orthonormalize(world, mo, int(nload));
+        const long n = long(nmo);
+        tensorT eps_new(n), occ_new(n);
+        for (size_t j = 0; j < nload; ++j) { eps_new[j] = eps[j]; occ_new[j] = occ[j]; }
+        for (size_t j = nload; j < nmo; ++j) eps_new[j] = e[ncore + j];
+        eps = eps_new;
+        occ = occ_new;
+        set = group_orbital_sets(world, eps, occ, int(nmo));
+    };
+    pad(amo, aeps, aocc, aset, param.nmo_alpha());
+    if (pad_b) pad(bmo, beps, bocc, bset, param.nmo_beta());
+    return true;
+}
+
 
 /// group orbitals into sets of similar orbital energies for localization
 
@@ -1246,6 +1426,22 @@ std::vector<int> SCF::group_orbital_sets(World& world, const tensorT& eps,
     }
     if (world.rank() == 0 and (param.print_level() > 3)) print("set ", iset, "  ", lo, " - ", nmo - 1);
     return set;
+}
+
+
+void SCF::apply_explicit_occupations(World& world) {
+    auto apply = [&](tensorT& occ, const std::vector<double>& input, const char* label) {
+        if (input.empty()) return;
+        MADNESS_CHECK_THROW(long(input.size()) <= occ.size(), "explicit occupations exceed the number of orbitals");
+        for (size_t i = 0; i < input.size(); ++i) occ[i] = input[i];
+        if (world.rank() == 0 && param.print_level() > 1) {
+            printf("  explicit %s occupations:", label);
+            for (long i = 0; i < occ.size(); ++i) printf(" %.0f", occ[i]);
+            printf("\n");
+        }
+    };
+    apply(aocc, param.aocc(), "alpha");
+    if (param.have_beta()) apply(bocc, param.bocc(), "beta");
 }
 
 
@@ -1354,9 +1550,18 @@ vecfuncT SCF::apply_potential(World& world, const tensorT& occ,
         Exchange<double, 3> K(world, this, ispin);
 
         K.set_algorithm(Exchange<double,3>::string2algorithm(param.hfexalg()));
-        K.set_symmetric(true).set_printlevel(param.print_level());
+        // symmetric requires bra == ket == argument; with virtuals present
+        // (nvalpha/nvbeta > 0) the argument vector is longer than K's occupied
+        // bra/ket and the symmetric pair batching must not be used.
+        long nocc_in_k = 0;
+        for (long i = 0; i < occ.size(); ++i)
+            if (occ(i) > 0.0) ++nocc_in_k;
+        K.set_symmetric(size_t(nocc_in_k) == amo.size()).set_printlevel(param.print_level());
         K.set_macro_task_info(MacroTaskInfo::preset("default"));
         K.set_macro_task_info(param.memory());
+        K.set_batch_granularity(param.hfex_granularity());
+        K.set_accumulation_mode(param.hfex_accumulation());
+        K.set_cost_aware_assignment(param.hfex_cost_aware());
 
         vecfuncT Kamo = K(amo);
         tensorT excv = inner(world, Kamo, amo);
@@ -1375,12 +1580,26 @@ vecfuncT SCF::apply_potential(World& world, const tensorT& occ,
     }
 
     // compute the local DFT potential for the MOs
+    // the operator has to outlive this block: a meta-gga also contributes a
+    // non-multiplicative term, which is applied to the orbitals further down
+    std::shared_ptr<XCOperator<double, 3> > xcoperator;
     if (xc.is_dft() && !(xc.hf_exchange_coefficient() == 1.0)) { //??RJH?? Won't this incorrectly exclude hybrid DFT with coeff=1.0?
         START_TIMER(world);
 
-        XCOperator<double, 3> xcoperator(world, this, ispin, param.dft_deriv());
-        if (ispin == 0) exc = xcoperator.compute_xc_energy();
-        vloc += xcoperator.make_xc_potential();
+        xcoperator.reset(new XCOperator<double, 3>(world, this, ispin, param.dft_deriv()));
+        xcoperator->set_print_level(param.print_level());
+        // the kinetic energy density is orbital-dependent, so unlike the density
+        // it cannot be recovered from what the ctor is given
+        // occupations included on purpose: amo/bmo are sized nmo and carry the
+        // virtuals, which must not contribute to tau
+        if (xcoperator->has_tau_term())
+            xcoperator->set_tau(this->amo, this->aocc, this->bmo, this->bocc);
+        // accumulate: for a hybrid, exc already holds the exact-exchange
+        // contribution from the block above. compute_xc_energy() returns the
+        // spin-summed DFT energy, hence the ispin==0 guard -- it is counted once,
+        // while the exchange part is accumulated per spin by the caller.
+        if (ispin == 0) exc += xcoperator->compute_xc_energy();
+        vloc += xcoperator->make_xc_potential();
 
         END_TIMER(world, "DFT potential");
     }
@@ -1395,7 +1614,10 @@ vecfuncT SCF::apply_potential(World& world, const tensorT& occ,
 
     // compute Vpsi and truncation
     START_TIMER(world);
-    const bool tile_Vpsi = true;
+    // Tiling bounds the products' transient memory, which only threatens at high precision, and
+    // costs nmo/ntile fences plus a truncation of every product. The untiled path was the default
+    // for years; take it below the tight protocols.
+    const bool tile_Vpsi = FunctionDefaults<3>::get_thresh() < 1.e-7;
     size_t min_tile = 10;
     size_t ntile = std::min(amo.size(), min_tile);
     if (!molecule.parameters.pure_ae()) {
@@ -1406,14 +1628,11 @@ vecfuncT SCF::apply_potential(World& world, const tensorT& occ,
                 size_t iend = std::min(ilo+ntile,amo.size());
                 vecfuncT tmpamo(amo.begin()+ilo,amo.begin()+iend);
                 auto tmpVpsi = mul_sparse(world, vloc, tmpamo, vtol);
-
-                //truncate tmpVpsi
                 truncate(world, tmpVpsi);
 
-                //put the results into their final home
-                for (size_t i = ilo; i<iend; ++i){
-                    Vpsi[i] += tmpVpsi[i-ilo];
-                }
+                // one gaxpy per tile instead of two fences per orbital, as the untiled branch does
+                vecfuncT Vpsi_tile(Vpsi.begin()+ilo, Vpsi.begin()+iend);
+                gaxpy(world, 1.0, Vpsi_tile, 1.0, tmpVpsi);
             }
             END_TIMER(world, "V*psi");
         } else {
@@ -1424,6 +1643,17 @@ vecfuncT SCF::apply_potential(World& world, const tensorT& occ,
             END_TIMER(world, "Truncate Vpsi");
             print_meminfo(world.rank(), "Truncate Vpsi");
         }
+    }
+
+    // The meta-gga term -1/2 nabla.(de/dtau nabla psi_i) is an operator on the
+    // orbitals, not a local potential, so it belongs in Vpsi alongside K rather
+    // than in vloc. It goes in after the tiling block above, which truncates only
+    // its own per-tile product and never Vpsi itself.
+    if (xcoperator and xcoperator->has_tau_term()) {
+        START_TIMER(world);
+        gaxpy(world, 1.0, Vpsi, 1.0, xcoperator->apply_tau_term(amo));
+        truncate(world, Vpsi);
+        END_TIMER(world, "meta-gga tau term");
     }
 
     world.gop.fence();
@@ -1484,11 +1714,20 @@ tensorT SCF::derivatives(World& world, const functionT& rho) const {
         }
     }
     //if (world.rank() == 0) print("derivatives:\n", r, ru, rc, ra);
-    r += ra + ru + rc;
+    // the D3 gradient uses the same [3*atom + axis] layout, in Ha/bohr
+    r += ra + ru + rc + dispersion.gradient(world, molecule);
     END_TIMER(world, "derivatives");
 
-    if (world.rank() == 0 and (param.print_level() > 1)) {
-        print("\n Derivatives (a.u.)\n -----------\n");
+    // Not printed while an optimizer is driving: these are the RAW derivatives,
+    // carrying a spurious net force and torque that is routinely orders of
+    // magnitude larger than the residual the optimizer converges. MolOpt prints
+    // the projected gradient it actually uses (MolOpt::print_gradient), and two
+    // tables differing by 100x invite the reader to conclude that no projection
+    // is happening. A single-point gradient run still prints this, since there
+    // it is the answer rather than an intermediate.
+    if (world.rank() == 0 and (param.print_level() > 1) and not suppress_raw_gradient_print) {
+        print("\n Derivatives (a.u.), raw -- translations/rotations NOT projected out"
+              "\n -----------\n");
         print(
                 "  atom        x            y            z          dE/dx        dE/dy        dE/dz");
         print(
@@ -1541,43 +1780,237 @@ void SCF::vector_stats(const std::vector<double>& v, double& rms,
     rms = sqrt(rms / v.size());
 }
 
-vecfuncT SCF::compute_residual(World& world, tensorT& occ, tensorT& fock,
-                               const vecfuncT& psi, vecfuncT& Vpsi, double& err) {
+/// ~10 orbitals per rank in flight; nmo (one chunk) for small systems.
+/// Shared by the tiled BSH apply and the residual transform.
+static size_t bsh_tile_size(size_t nmo, size_t nranks) {
+    const size_t min_tile = 10;
+    return std::min(std::max<size_t>(nmo, 1), min_tile * std::max<size_t>(nranks, 1));
+}
 
+/// loose/tight divide of the bsh_apply dispatch: at thresh <= this, auto switches to
+/// the memory-conservative macrotask configuration (one orbital per task).
+static constexpr double BSH_TIGHT_THRESH = 1.0e-7;
 
-    // apply the BSH operator in a Macrotask to reduce communication and possible hangs
+vecfuncT SCF::apply_bsh_macrotask(World& world, vecfuncT& Vpsi, const tensorT& eps,
+                                  const CalculationParameters& param, long batch,
+                                  bool redistribute) {
     class ApplyTask : public MacroTaskOperationBase {
     public:
         ApplyTask() {
-            name="applytask";
+            name="apply_bsh";
         }
-        // you need to define the exact argument(s) of operator() as tuple
         typedef std::tuple<const std::vector<real_function_3d> &, const Tensor<double>&,
         const CalculationParameters&> argtupleT;
-
-        // you need to define the result type
-        // resultT must implement gaxpy(alpha, result, beta, contribution)
-        // with resultT result, contribution;
         using resultT = std::vector<real_function_3d>;
 
-        // you need to define an empty constructor for the result
+        // Owner-pinned placement (iff the operand was redistributed): owner_[j] is where
+        // redistribute_to_batches put Vpsi[j]; running j's task there makes the auto_copy
+        // a local fetch. owner_ MUST equal the redistribute assignment and each task must
+        // span one function (batch=1). Replicated, so all ranks compute the same slot;
+        // nsubworld==nranks under the redistribute. Empty => -1 (dynamic).
+        std::vector<ProcessID> owner_;
+        long owner_hint(const madness::Batch& batch, const long nsubworld) const override {
+            if (owner_.empty() || nsubworld <= 0) return -1;
+            const long b = batch.input[0].begin;
+            if (b >= 0 && b < static_cast<long>(owner_.size()))
+                return static_cast<long>(owner_[b]) % nsubworld;
+            return b % nsubworld;   // fallback (not reached once owner_ is populated)
+        }
+
+        // called in the universe (full argtuple -> full-size result) and in each subworld
+        // (batched argtuple -> batch-size result); sizing from the input vector fits both.
         resultT allocator(World &world, const argtupleT &argtuple) const {
             std::size_t n = std::get<0>(argtuple).size();
-            resultT result = zero_functions_compressed<double, 3>(world, n);
-            return result;
+            return zero_functions_compressed<double, 3>(world, n);
         }
 
         resultT operator()(const std::vector<real_function_3d> &Vpsi,
             const Tensor<double>& eps, const CalculationParameters& param) const {
-            World& world=Vpsi.front().world();
+            // the framework deep-copied the batch into the subworld;
+            // Vpsi.front().world() IS the subworld
+            World& world = Vpsi.front().world();
             MADNESS_CHECK_THROW(eps.ndim()==1,"need a 1D tensor for eps in ApplyTask");
-            Tensor<double> batched_eps=eps(Slice(batch.input[0].begin,batch.input[0].end-1));
-            MADNESS_CHECK_THROW(batched_eps.size()==batch.input[0].size(),"batched eps size mismatch");
+            // slice eps to this task's batch (Slice end inclusive; full-size batch -> -1).
+            const long b = batch.input[0].begin;
+            const long e = batch.input[0].is_full_size() ? eps.size() : batch.input[0].end;
+            Tensor<double> batched_eps=eps(Slice(b, e-1));
+            MADNESS_CHECK_THROW(batched_eps.size()==static_cast<long>(Vpsi.size()),
+                                "batched eps size mismatch in ApplyTask");
             std::vector<poperatorT> ops = make_bsh_operators(world, batched_eps,param);
-            vecfuncT new_psi = apply(world, ops, Vpsi);
+            vecfuncT tmp_Vpsi = Vpsi;   // shallow copies; set_thresh mutates impl state
+            set_thresh(world, tmp_Vpsi, FunctionDefaults<3>::get_thresh());
+            // in-subworld apply+truncate; framework overhead = outer timer - this
+            const bool instr = param.print_level() >= 10;
+            const double in_gb = instr ? get_size(world, tmp_Vpsi) : 0.0;
+            const double w0 = wall_time();
+            vecfuncT new_psi = apply(world, ops, tmp_Vpsi);
+            const double w1 = wall_time();
+            truncate(world, new_psi);   // in-subworld so the universe gaxpy stays small
+            const double w2 = wall_time();
+            if (instr and world.rank() == 0)
+                printf("  [ApplyTask sw nrank=%d nfunc=%zu apply=%.2fs truncate=%.2fs in=%.3fGB out=%.3fGB]\n",
+                       world.size(), tmp_Vpsi.size(), w1 - w0, w2 - w1, in_gb,
+                       get_size(world, new_psi));
             return new_psi;
         }
     };
+
+    START_TIMER(world);
+    ApplyTask apply_task;
+    MADNESS_CHECK_THROW(!redistribute || batch == 1,
+                        "the BSH operand redistribute requires batch=1 (one owner per task)");
+    // cost-balanced assignment, computed UP FRONT from Vpsi's original distribution;
+    // it drives BOTH the redistribute and owner_hint -- they MUST share one assignment
+    std::vector<ProcessID> bsh_owner;
+    if (redistribute) {
+        bsh_owner = assign_cost_aware(function_costs(world, Vpsi), world.size());
+        apply_task.owner_ = bsh_owner;
+    }
+    if (batch > 0) {
+        apply_task.partitioner->set_max_batch_size(batch);
+        apply_task.partitioner->set_min_batch_size(batch);
+    }
+    auto factory = MacroTaskQFactory(world);
+    // small_memory = StoreFunctionViaPointer: pointers in the cloud, coeffs streamed
+    factory.set_policy(MacroTaskInfo::preset("small_memory"));
+    // owner-pinning needs nworld==nranks (subworld slot == physical rank)
+    if (redistribute) factory.set_nworld(world.size());
+    // printlevel 5 (not 3) so printtimings_detail fires -> the BSH taskq prints its own
+    // "finalize gaxpy (sw->universe)" line; still <10 so no per-task debug flood.
+    if (param.print_level() >= 10) factory.set_printlevel(5);
+    MacroTask macrotask(world, apply_task, factory);
+    const bool instr = param.print_level() >= 10;
+    const double vpsi_gb = instr ? get_size(world, Vpsi) : 0.0;
+    // localize Vpsi up front -- no convolution running, so the move runs at transport
+    // speed; the auto_copy then fetches locally. Streams, no 2x transient.
+    if (redistribute) {
+        const double t0 = wall_time();
+        redistribute_to_batches(world, Vpsi, bsh_owner);
+        if (instr) {
+            double rss = madness::get_rss_usage_in_GB();
+            world.gop.max(rss);
+            if (world.rank() == 0)
+                printf("  [BSH redistribute: Vpsi -> single-owner (%zu funcs) in %.2fs | peakRSS max=%.2fGB/rank]\n",
+                       Vpsi.size(), wall_time() - t0, rss);
+        }
+    }
+    vecfuncT new_psi = macrotask(Vpsi, eps, param);
+    Vpsi.clear();
+    world.gop.fence();
+    if (instr) {
+        const double newpsi_gb = get_size(world, new_psi);
+        // fence-free getrusage high-water; rss_max = worst rank, rss_tot = sum
+        double rss_max = madness::get_rss_usage_in_GB();
+        double rss_tot = rss_max;
+        world.gop.max(rss_max); world.gop.sum(rss_tot);
+        if (world.rank() == 0) {
+            auto cs = macrotask.get_taskq()->get_cloud_statistics();
+            printf("  [BSH macrotask: held Vpsi=%.2fGB (%.3f/rank) result=%.2fGB | "
+                   "comm deep-copy max=%.2fs av=%.2fs | cloud-read max=%.2fs | write=%.2fs | tgt-repl=%.2fs"
+                   " | peakRSS max=%.2fGB/rank tot=%.2fGB]\n",
+                   vpsi_gb, vpsi_gb/std::max<int>(1,world.size()), newpsi_gb,
+                   cs.value("copy_time_max_s",-1.0), cs.value("copy_time_av_s",-1.0),
+                   cs.value("reading_time_max_s",-1.0), cs.value("writing_time_s",-1.0),
+                   cs.value("target_replication_time_s",-1.0),
+                   rss_max, rss_tot);
+        }
+    }
+    END_TIMER(world, "Apply BSH (macrotask)");
+    return new_psi;
+}
+
+/// Tiled apply: bounds the nonstandard working set to ~10 orbitals/rank (bsh_tile_size);
+/// the untiled apply converts every orbital at once and OOMs large systems. Consumes Vpsi.
+vecfuncT SCF::apply_bsh_tiled(World& world, vecfuncT& Vpsi, const tensorT& eps,
+                              const CalculationParameters& param) {
+    START_TIMER(world);
+    const size_t nfunc = Vpsi.size();
+    const size_t ntile = bsh_tile_size(nfunc, world.size());
+    vecfuncT new_psi(nfunc);
+    for (size_t ilo=0; ilo<nfunc; ilo+=ntile) {
+        size_t iend = std::min(ilo+ntile,nfunc);
+        vecfuncT tmp_Vpsi(Vpsi.begin()+ilo,Vpsi.begin()+iend);
+        // eps(i) == min(-0.05, fock(i,i)) for the whole vector; slice it for this tile.
+        tensorT tmp_eps = eps(Slice(long(ilo), long(iend)-1));
+        std::vector<poperatorT> ops = make_bsh_operators(world, tmp_eps, param);
+        set_thresh(world, tmp_Vpsi, FunctionDefaults<3>::get_thresh());
+        vecfuncT tmp_new_psi = apply(world, ops, tmp_Vpsi);
+        truncate(world, tmp_new_psi);
+        // results home, inputs freed as the loop advances
+        for (size_t i = ilo; i<iend; ++i){
+            new_psi[i] = std::move(tmp_new_psi[i-ilo]);
+            Vpsi[i].clear(false);
+        }
+        ops.clear();
+    }
+    Vpsi.clear();
+    world.gop.fence();
+    if (param.print_level() >= 10) {   // peak RSS, comparable to the macrotask print
+        double rss_max = madness::get_rss_usage_in_GB(), rss_tot = rss_max;
+        world.gop.max(rss_max); world.gop.sum(rss_tot);
+        if (world.rank() == 0)
+            printf("  [BSH tile: peakRSS max=%.2fGB/rank tot=%.2fGB]\n", rss_max, rss_tot);
+    }
+    END_TIMER(world, "Apply BSH");
+    return new_psi;
+}
+
+/// Single un-tiled apply (small systems / debugging). Consumes Vpsi.
+vecfuncT SCF::apply_bsh_plain(World& world, vecfuncT& Vpsi, const tensorT& eps,
+                              const CalculationParameters& param) {
+    START_TIMER(world);
+    std::vector<poperatorT> ops = make_bsh_operators(world, eps, param);
+    set_thresh(world, Vpsi, FunctionDefaults<3>::get_thresh());
+    vecfuncT new_psi = apply(world, ops, Vpsi);
+    ops.clear();
+    Vpsi.clear();
+    world.gop.fence();
+    if (param.print_level() >= 10) {
+        double rss_max = madness::get_rss_usage_in_GB(), rss_tot = rss_max;
+        world.gop.max(rss_max); world.gop.sum(rss_tot);
+        if (world.rank() == 0)
+            printf("  [BSH plain: peakRSS max=%.2fGB/rank tot=%.2fGB]\n", rss_max, rss_tot);
+    }
+    END_TIMER(world, "Apply BSH");
+    START_TIMER(world);
+    truncate(world, new_psi);
+    END_TIMER(world, "Truncate new psi");
+    return new_psi;
+}
+
+vecfuncT SCF::apply_bsh(World& world, vecfuncT& Vpsi, const tensorT& eps,
+                        const CalculationParameters& param) {
+    // bsh_apply selects the backend (executors above; eps fed identically to all).
+    // auto: macrotask when multinode (rank-local apply, no inter-node convolution comm)
+    // or at tight protocol (one orbital per task bounds the working set where memory
+    // binds); tile on a single node at loose/medium (no gather, no subworld copy).
+    std::string bsh_apply_mode = param.bsh_apply();
+    const bool tight = FunctionDefaults<3>::get_thresh() <= BSH_TIGHT_THRESH;
+    long batch = 0;   // 0 = partitioner default
+    if (bsh_apply_mode == "auto") {
+        const long n_nodes = long(ranks_per_host(world).size());   // collective
+        bsh_apply_mode = (n_nodes >= 2 or tight) ? "macrotask" : "tile";
+        // tight: one orbital per task (memory, and required by the redistribute
+        // below); loose/medium: a modest batch amortizes per-task overhead
+        if (bsh_apply_mode == "macrotask") batch = tight ? 1 : 4;
+        if (param.print_level() >= 2 and world.rank() == 0)
+            print("BSH apply [auto]:", bsh_apply_mode, "(nodes:", n_nodes,
+                  tight ? ", tight protocol)" : ")");
+    }
+    // pre-localize ONLY at tight protocol: the per-task gather serve-starves there and
+    // the redistribute + local fetch collapse it; at loose/medium the move is a net
+    // loss. Applies to auto and to explicit bsh_apply=macrotask.
+    bool redistribute = (bsh_apply_mode == "macrotask") and tight;
+    if (redistribute) batch = 1;   // one owner per task (explicit macrotask mode included)
+    if (redistribute and param.print_level() >= 2 and world.rank() == 0)
+        print("BSH apply: redistribute operand to single-owner batches (tight protocol)");
+    if (bsh_apply_mode == "macrotask") return apply_bsh_macrotask(world, Vpsi, eps, param, batch, redistribute);
+    if (bsh_apply_mode == "plain")     return apply_bsh_plain(world, Vpsi, eps, param);
+    return apply_bsh_tiled(world, Vpsi, eps, param);
+}
+
+vecfuncT SCF::compute_residual(World& world, tensorT& occ, tensorT& fock,
+                               const vecfuncT& psi, vecfuncT& Vpsi, double& err) {
 
     START_TIMER(world);
     PROFILE_MEMBER_FUNC(SCF);
@@ -1589,73 +2022,34 @@ vecfuncT SCF::compute_residual(World& world, tensorT& occ, tensorT& fock,
         eps(i) = std::min(-0.05, fock(i, i));
         fock(i, i) -= eps(i);
     }
-    vecfuncT fpsi = transform(world, psi, fock, trantol, true);
 
-    for (int i = 0; i < nmo; ++i) { // Undo the damage
+    // Vpsi -= psi*fock, tiled over output columns: untiled transform() materializes all
+    // nmo fpsi next to psi+Vpsi, ~3x orbital memory at tight thresh -- an OOM upstream
+    // of the (memory-frugal) BSH apply. ntile fpsi live at once -> ~2x + one chunk;
+    // a single chunk (identical path) for small systems. fock keeps the -eps shift
+    // across chunks (restored after the loop).
+    {
+        const size_t ntile = bsh_tile_size(nmo, world.size());
+        for (size_t ilo = 0; ilo < size_t(nmo); ilo += ntile) {
+            size_t iend = std::min(ilo + ntile, size_t(nmo));
+            vecfuncT fpsi = transform(world, psi,
+                                      fock(_, Slice(long(ilo), long(iend) - 1)), trantol, true);
+            for (size_t i = ilo; i < iend; ++i)
+                Vpsi[i].gaxpy(1.0, fpsi[i - ilo], -1.0, false);
+            world.gop.fence();
+            fpsi.clear();   // free this chunk before building the next
+        }
+    }
+
+    for (int i = 0; i < nmo; ++i) { // Undo the damage (after all chunks used the shift)
         fock(i, i) += eps(i);
     }
 
-    gaxpy(world, 1.0, Vpsi, -1.0, fpsi);
-    fpsi.clear();
     std::vector<double> fac(nmo, -2.0);
     scale(world, Vpsi, fac);
     END_TIMER(world, "Compute residual stuff");
 
-    const bool tile_applyBSH = true;
-    vecfuncT new_psi;
-
-    if (tile_applyBSH) {
-        START_TIMER(world);
-        size_t min_tile = 10;
-        size_t ntile = std::min(amo.size(), min_tile);
-        new_psi = zero_functions<double,3>(world, Vpsi.size());
-
-        for (size_t ilo=0; ilo<Vpsi.size(); ilo+=ntile) {
-            size_t iend = std::min(ilo+ntile,Vpsi.size());
-            vecfuncT tmp_Vpsi(Vpsi.begin()+ilo,Vpsi.begin()+iend);
-
-            int tmp_nmo = tmp_Vpsi.size();
-            tensorT tmp_eps(tmp_nmo);
-            for (int i = 0; i < tmp_nmo; ++i) {
-                tmp_eps(i) = std::min(-0.05, fock(i+ilo, i+ilo));
-            }
-
-            std::vector<poperatorT> ops = make_bsh_operators(world, tmp_eps, param);
-            set_thresh(world, tmp_Vpsi, FunctionDefaults<3>::get_thresh());
-
-            vecfuncT tmp_new_psi = apply(world, ops, tmp_Vpsi);
-
-            //truncate tmp_new_psi
-            truncate(world, tmp_new_psi);
-
-            //put the results into their final home
-            for (size_t i = ilo; i<iend; ++i){
-                new_psi[i] += tmp_new_psi[i-ilo];
-            }
-            ops.clear();
-        }
-
-        Vpsi.clear();
-        world.gop.fence();
-        END_TIMER(world, "Apply BSH");
-    } else {
-        START_TIMER(world);
-
-        std::vector<poperatorT> ops = make_bsh_operators(world, eps, param);
-        set_thresh(world, Vpsi, FunctionDefaults<3>::get_thresh());
-
-        new_psi = apply(world, ops, Vpsi);
-        
-        ops.clear();
-        Vpsi.clear();
-        world.gop.fence();
-
-        END_TIMER(world, "Apply BSH");
-        
-        START_TIMER(world);
-        truncate(world, new_psi);
-        END_TIMER(world, "Truncate new psi");
-    }
+    vecfuncT new_psi = apply_bsh(world, Vpsi, eps, param);
 
     // Thought it was a bad idea to truncate *before* computing the residual
     // but simple tests suggest otherwise ... no more iterations and
@@ -1827,6 +2221,78 @@ tensorT SCF::diag_fock_matrix(World& world, tensorT& fock, vecfuncT& psi,
     return U;
 }
 
+bool SCF::canonicalize_virtuals(World& world, tensorT& fock, vecfuncT& psi,
+                                vecfuncT& Vpsi, const int nocc, const bool force) const {
+    PROFILE_MEMBER_FUNC(SCF);
+    const int nmo = psi.size();
+    const int nv = nmo - nocc;
+    if (nv <= 0) return false;
+
+    const Slice v(nocc, nmo - 1);
+    vecfuncT vmo(psi.begin() + nocc, psi.end());
+    tensorT F_vv = copy(fock(v, v));
+    tensorT S_vv = matrix_inner(world, vmo, vmo, true);
+
+    tensorT U, evals;
+    sygvp(world, F_vv, S_vv, 1, U, evals);
+    world.gop.broadcast(U.ptr(), U.size(), 0);
+    world.gop.broadcast(evals.ptr(), evals.size(), 0);
+
+    // Fix each column's sign (largest element positive): sygvp's signs are
+    // arbitrary, and a sign-flipped virtual is inconsistent with the KAIN history.
+    for (int k = 0; k < nv; ++k) {
+        int imax = 0;
+        for (int i = 1; i < nv; ++i)
+            if (std::abs(U(i, k)) > std::abs(U(imax, k))) imax = i;
+        if (U(imax, k) < 0.0)
+            for (int i = 0; i < nv; ++i) U(i, k) = -U(i, k);
+    }
+
+    // A near-identity rotation would only churn the KAIN history; the residual
+    // off-diagonal F_vv is carried as Lagrange coupling in the residual, as for
+    // the localized occupieds.
+    double offdiag = 0.0;
+    for (int i = 0; i < nv; ++i)
+        for (int j = 0; j < nv; ++j)
+            if (i != j) offdiag = std::max(offdiag, std::abs(U(i, j)));
+    if (offdiag <= 0.01 and not force) {
+        if (world.rank() == 0 && param.print_level() >= 3)
+            printf("  canonicalize virtuals: skipped (max offdiag %.1e)\n", offdiag);
+        return false;
+    }
+    if (world.rank() == 0 && param.print_level() >= 3)
+        printf("  canonicalize virtuals: rotated (max offdiag %.1e)\n", offdiag);
+
+    // Rotating Vpsi with the same U is exact only because the exchange operator
+    // sums over occupied orbitals: a rotation within the virtual space leaves it
+    // unchanged.
+    vecfuncT vVpsi(Vpsi.begin() + nocc, Vpsi.end());
+    const double scale = std::min(30.0, double(nmo));
+    vVpsi = transform(world, vVpsi, U, vtol / scale, false);
+    vmo = transform(world, vmo, U, FunctionDefaults<3>::get_thresh() / scale, true);
+    truncate(world, vVpsi, vtol, false);
+    truncate(world, vmo);
+    normalize(world, vmo);
+    for (int k = 0; k < nv; ++k) {
+        psi[nocc + k] = vmo[k];
+        Vpsi[nocc + k] = vVpsi[k];
+    }
+
+    // rotate the occupied-virtual coupling along: the final diagonalization
+    // in solve() reads it
+    if (nocc > 0) {
+        const Slice o(0, nocc - 1);
+        const tensorT F_ov = inner(copy(fock(o, v)), U);
+        fock(o, v) = F_ov;
+        fock(v, o) = transpose(F_ov);
+    }
+    for (int i = 0; i < nv; ++i)
+        for (int j = 0; j < nv; ++j)
+            fock(nocc + i, nocc + j) = (i == j) ? evals(i) : 0.0;
+
+    return true;
+}
+
 void SCF::loadbal(World& world, functionT& arho, functionT& brho,
                   functionT& arho_old, functionT& brho_old, subspaceT& subspace) {
     if (world.size() == 1)
@@ -1896,32 +2362,237 @@ void SCF::rotate_subspace(World& world, const distmatT& dUT, subspaceT& subspace
     world.gop.fence();
 }
 
+void SCF::solve_virtuals(World& world) {
+    PROFILE_MEMBER_FUNC(SCF);
+    const double dconv = std::max(FunctionDefaults<3>::get_thresh(), param.dconv());
+    const int nocca = param.nalpha(), noccb = param.nbeta();
+    const int nva = int(amo.size()) - nocca;
+    const int nvb = param.have_beta() ? int(bmo.size()) - noccb : 0;
+    MADNESS_CHECK_THROW(nva >= 0 and nvb >= 0, "freeze_occupied: fewer orbitals than occupied");
+    MADNESS_CHECK_THROW(nva > 0 or nvb > 0, "freeze_occupied: no virtuals to iterate");
+    if (world.rank() == 0 and param.print_level() > 1)
+        printf("\nfreeze_occupied: iterating %d alpha and %d beta virtuals in the fixed mean field\n", nva, nvb);
+
+    // the input occupations override the archive's, as in solve()
+    apply_explicit_occupations(world);
+
+    // Nuclear and Coulomb potentials of the occupied density, once. XC and
+    // exchange are added per call by apply_potential, which takes the occupied
+    // orbitals from this object rather than from its argument.
+    START_TIMER(world);
+    functionT arho = make_density(world, aocc, amo), brho;
+    if (param.nbeta()) brho = param.spin_restricted() ? arho : make_density(world, bocc, bmo);
+    else brho = functionT(world);
+    functionT rho = arho + brho;
+    rho.truncate();
+    real_function_3d vnuc;
+    if (molecule.parameters.psp_calc()) {
+        vnuc = gthpseudopotential->vlocalpot();
+    } else if (molecule.parameters.pure_ae()) {
+        vnuc = potentialmanager->vnuclear();
+    } else {
+        vnuc = potentialmanager->vnuclear() + gthpseudopotential->vlocalpot();
+    }
+    functionT vcoul = apply(*coulop, rho);
+    functionT vlocal = vcoul + vnuc;
+    if (param.pcm_data() != "none") vlocal += pcm.compute_pcm_potential(vcoul);
+    vcoul.clear(false);
+    rho.clear(false);
+    vlocal.truncate();
+    END_TIMER(world, "frozen potential");
+
+    bool converged_all = true;
+    auto iterate_block = [&](vecfuncT& mo, tensorT& eps, const int nocc, const int nv,
+                             const int ispin, const char* spin) {
+        if (nv <= 0) return;
+        subspaceT subspace;
+        tensorT Q;
+        tensorT occ_v(nv);   // spectators: zero occupation
+        bool converged = false;
+        for (int iter = 0; iter < param.maxiter(); ++iter) {
+            vecfuncT vmo(mo.begin() + nocc, mo.end());
+            double exc = 0.0, enl = 0.0, ekin = 0.0, err = 0.0;
+            vecfuncT Vv = apply_potential(world, occ_v, vmo, vlocal, exc, enl, ispin);
+            tensorT fock = make_fock_matrix(world, vmo, Vv, occ_v, ekin);
+            canonicalize_virtuals(world, fock, vmo, Vv, 0);
+            for (int i = 0; i < nv; ++i) {
+                mo[nocc + i] = vmo[i];
+                eps[nocc + i] = fock(i, i);
+            }
+            vecfuncT rv = compute_residual(world, occ_v, fock, vmo, Vv, err);
+            world.gop.broadcast(err, 0);
+            if (world.rank() == 0 and param.print_level() > 1)
+                printf("  %s virtuals iteration %d: max residual %.2e\n", spin, iter, err);
+            if (err < 5.0 * dconv) {
+                converged = true;
+                break;
+            }
+            // no update after the last evaluation, as in solve()
+            if (iter == param.maxiter() - 1) break;
+            compress(world, vmo, false);
+            compress(world, rv, false);
+            world.gop.fence();
+            const tensorT c = kain_solve(world, vmo, rv, subspace, Q);
+            vecfuncT vnew = kain_combine(world, subspace, c, 0, nv);
+            kain_trim(subspace, Q);
+            do_step_restriction(world, vmo, vnew, spin);
+            // orthogonal to the fixed occupieds, which orthonormalize(nocc) leaves untouched
+            vecfuncT all(mo.begin(), mo.begin() + nocc);
+            all.insert(all.end(), vnew.begin(), vnew.end());
+            orthonormalize(world, all, nocc);
+            for (int i = 0; i < nv; ++i) mo[nocc + i] = all[nocc + i];
+        }
+        converged_all = converged_all and converged;
+    };
+    iterate_block(amo, aeps, nocca, nva, 0, "alpha");
+    if (param.have_beta()) iterate_block(bmo, beps, noccb, nvb, 1, "beta");
+    else if (param.nbeta() > 0) bmo = amo;
+
+    if (converged_all) {
+        converged_for_thresh = FunctionDefaults<3>::get_thresh();
+        converged_for_dconv = dconv;
+    }
+    if (world.rank() == 0 and param.print_level() > 1) {
+        if (converged_all) print("\nConverged!\n");
+        // the occupied entries of aeps/beps are the archive's, in its gauge
+        if (nva > 0) {
+            print("alpha virtual eigenvalues");
+            print(aeps(Slice(nocca, -1)));
+        }
+        if (nvb > 0) {
+            print("beta virtual eigenvalues");
+            print(beps(Slice(noccb, -1)));
+        }
+        if (current_energy < 1.e9) printf("\ntotal energy of the occupied orbitals (from the archive) %20.12f\n", current_energy);
+    }
+}
+
+
+tensorT SCF::kain_solve(World& world, const vecfuncT& vm, const vecfuncT& rm,
+                        subspaceT& subspace, tensorT& Q) const {
+    PROFILE_MEMBER_FUNC(SCF);
+    START_TIMER(world);
+    tensorT c;
+    while (true) {
+        subspace.push_back(pairvecfuncT(vm, rm));
+        const int m = subspace.size();
+        tensorT ms(m);
+        tensorT sm(m);
+        for (int s = 0; s < m; ++s) {
+            const vecfuncT& vs = subspace[s].first;
+            const vecfuncT& rs = subspace[s].second;
+            for (unsigned int i = 0; i < vm.size(); ++i) {
+                ms[s] += vm[i].inner_local(rs[i]);
+                sm[s] += vs[i].inner_local(rm[i]);
+            }
+        }
+        world.gop.sum(ms.ptr(), m);
+        world.gop.sum(sm.ptr(), m);
+        tensorT newQ(m, m);
+        if (m > 1)
+            newQ(Slice(0, -2), Slice(0, -2)) = Q;
+        newQ(m - 1, _) = ms;
+        newQ(_, m - 1) = sm;
+        Q = newQ;
+
+        double rcond = 1e-12;
+        bool restart = false;
+        while (true) {
+            c = KAIN(Q, rcond);
+            if (world.rank() == 0 and (param.print_level() > 3)) print("kain c:", c);
+            if (c.absmax() < 3.0) {
+                break;
+            } else if (rcond < 0.01) {
+                if (world.rank() == 0 and (param.print_level() > 3))
+                    print("Increasing subspace singular value threshold ", c[m - 1], rcond);
+                rcond *= 100;
+            } else {
+                if (world.rank() == 0 and (param.print_level() > 3)) print("Restarting KAIN due to subspace malfunction");
+                Q = tensorT();
+                subspace.clear();
+                restart = true;
+                break;
+            }
+        }
+        if (not restart) break;
+    }
+    END_TIMER(world, "Update subspace stuff");
+    world.gop.broadcast_serializable(c, 0); // make sure everyone has same data
+    if (world.rank() == 0 and (param.print_level() > 3)) {
+        print("Subspace solution", c);
+    }
+    return c;
+}
+
+
+vecfuncT SCF::kain_combine(World& world, const subspaceT& subspace, const tensorT& c,
+                           const size_t lo, const size_t n) const {
+    PROFILE_MEMBER_FUNC(SCF);
+    vecfuncT mo_new = zero_functions_compressed<double, 3>(world, n, false);
+    world.gop.fence();
+    for (size_t m = 0; m < subspace.size(); ++m) {
+        const vecfuncT& vm = subspace[m].first;
+        const vecfuncT& rm = subspace[m].second;
+        const vecfuncT vms(vm.begin() + lo, vm.begin() + lo + n);
+        const vecfuncT rms(rm.begin() + lo, rm.begin() + lo + n);
+        gaxpy(world, 1.0, mo_new, c(m), vms, false);
+        gaxpy(world, 1.0, mo_new, -c(m), rms, false);
+    }
+    world.gop.fence();
+    return mo_new;
+}
+
+
+void SCF::kain_trim(subspaceT& subspace, tensorT& Q) const {
+    if (param.maxsub() <= 1) {
+        subspace.clear();
+    } else if (subspace.size() == size_t(param.maxsub())) {
+        subspace.erase(subspace.begin());
+        Q = Q(Slice(1, -1), Slice(1, -1));
+    }
+}
+
+
 void SCF::update_subspace(World& world, vecfuncT& Vpsia, vecfuncT& Vpsib,
                           tensorT& focka, tensorT& fockb, subspaceT& subspace, tensorT& Q,
                           double& bsh_residual, double& update_residual) {
     PROFILE_MEMBER_FUNC(SCF);
     double aerr = 0.0, berr = 0.0;
+
+    // Canonicalize the virtuals before the KAIN snapshot below, so the stored
+    // orbitals and their residual share one gauge.
+    if (param.do_localize()) {
+        canonicalize_virtuals(world, focka, amo, Vpsia, param.nalpha());
+        if (param.nbeta() != 0 && !param.spin_restricted())
+            canonicalize_virtuals(world, fockb, bmo, Vpsib, param.nbeta());
+    }
+
     vecfuncT vm = amo;
 
-    // Orbitals with occ!=1.0 exactly must be solved for as eigenfunctions
-    // so zero out off diagonal lagrange multipliers
+    // Decouple the occupied and non-occupied blocks: zero the Fock coupling
+    // between orbitals of different occupation, but KEEP the off-diagonal
+    // Lagrange terms inside each block. Occupieds converge in a localized
+    // (non-eigen) gauge precisely because those terms stay in the residual;
+    // a virtual needs the same treatment, or once it drifts into a mixture of
+    // eigenstates with different eigenvalues it has no BSH fixed point and
+    // its residual floors at the mixing scale.
     for (int i = 0; i < param.nmo_alpha(); i++) {
-        if (aocc[i] != 1.0) {
-            double tmp = focka(i, i);
-            focka(i, _) = 0.0;
-            focka(_, i) = 0.0;
-            focka(i, i) = tmp;
+        for (int j = 0; j < i; j++) {
+            if ((aocc[i] == 1.0) != (aocc[j] == 1.0)) {
+                focka(i, j) = 0.0;
+                focka(j, i) = 0.0;
+            }
         }
     }
 
     vecfuncT rm = compute_residual(world, aocc, focka, amo, Vpsia, aerr);
     if (param.nbeta() != 0 && !param.spin_restricted()) {
         for (int i = 0; i < param.nmo_beta(); i++) {
-            if (bocc[i] != 1.0) {
-                double tmp = fockb(i, i);
-                fockb(i, _) = 0.0;
-                fockb(_, i) = 0.0;
-                fockb(i, i) = tmp;
+            for (int j = 0; j < i; j++) {
+                if ((bocc[i] == 1.0) != (bocc[j] == 1.0)) {
+                    fockb(i, j) = 0.0;
+                    fockb(j, i) = 0.0;
+                }
             }
         }
 
@@ -1936,86 +2607,16 @@ void SCF::update_subspace(World& world, vecfuncT& Vpsia, vecfuncT& Vpsib,
     compress(world, vm, false);
     compress(world, rm, false);
     world.gop.fence();
+    END_TIMER(world, "Update subspace compress");
 
-    restart:
-    subspace.push_back(pairvecfuncT(vm, rm));
-    int m = subspace.size();
-    tensorT ms(m);
-    tensorT sm(m);
-    for (int s = 0; s < m; ++s) {
-        const vecfuncT& vs = subspace[s].first;
-        const vecfuncT& rs = subspace[s].second;
-        for (unsigned int i = 0; i < vm.size(); ++i) {
-            ms[s] += vm[i].inner_local(rs[i]);
-            sm[s] += vs[i].inner_local(rm[i]);
-        }
-    }
+    const tensorT c = kain_solve(world, vm, rm, subspace, Q);
 
-    world.gop.sum(ms.ptr(), m);
-    world.gop.sum(sm.ptr(), m);
-    tensorT newQ(m, m);
-    if (m > 1)
-        newQ(Slice(0, -2), Slice(0, -2)) = Q;
-
-    newQ(m - 1, _) = ms;
-    newQ(_, m - 1) = sm;
-    Q = newQ;
-    //if (world.rank() == 0) { print("kain Q"); print(Q); }
-    tensorT c;
-    //if (world.rank() == 0) {
-    double rcond = 1e-12;
-    while (1) {
-        c = KAIN(Q, rcond);
-        if (world.rank() == 0 and (param.print_level() > 3)) print("kain c:", c);
-        //if (std::abs(c[m - 1]) < 5.0) { // was 3
-        if (c.absmax() < 3.0) { // was 3
-            break;
-        } else if (rcond < 0.01) {
-            if (world.rank() == 0 and (param.print_level() > 3))
-                print("Increasing subspace singular value threshold ", c[m - 1], rcond);
-            rcond *= 100;
-        } else {
-            //print("Forcing full step due to subspace malfunction");
-            // c = 0.0;
-            // c[m - 1] = 1.0;
-            // break;
-            if (world.rank() == 0 and (param.print_level() > 3)) print("Restarting KAIN due to subspace malfunction");
-            Q = tensorT();
-            subspace.clear();
-            goto restart; // fortran hat on ...
-        }
-    }
-    //}
-    END_TIMER(world, "Update subspace stuff");
-
-    world.gop.broadcast_serializable(c, 0); // make sure everyone has same data
-    if (world.rank() == 0 and (param.print_level() > 3)) {
-        print("Subspace solution", c);
-    }
     START_TIMER(world);
-    vecfuncT amo_new = zero_functions_compressed<double, 3>(world, amo.size(), false);
-    vecfuncT bmo_new = zero_functions_compressed<double, 3>(world, bmo.size(), false);
-    world.gop.fence();
-    for (unsigned int m = 0; m < subspace.size(); ++m) {
-        const vecfuncT& vm = subspace[m].first;
-        const vecfuncT& rm = subspace[m].second;
-        const vecfuncT vma(vm.begin(), vm.begin() + amo.size());
-        const vecfuncT rma(rm.begin(), rm.begin() + amo.size());
-        const vecfuncT vmb(vm.end() - bmo.size(), vm.end());
-        const vecfuncT rmb(rm.end() - bmo.size(), rm.end());
-        gaxpy(world, 1.0, amo_new, c(m), vma, false);
-        gaxpy(world, 1.0, amo_new, -c(m), rma, false);
-        gaxpy(world, 1.0, bmo_new, c(m), vmb, false);
-        gaxpy(world, 1.0, bmo_new, -c(m), rmb, false);
-    }
-    world.gop.fence();
+    vecfuncT amo_new = kain_combine(world, subspace, c, 0, amo.size());
+    vecfuncT bmo_new;   // in a spin-restricted run bmo mirrors amo and is not in the subspace
+    if (param.have_beta()) bmo_new = kain_combine(world, subspace, c, amo.size(), bmo.size());
     END_TIMER(world, "Subspace transform");
-    if (param.maxsub() <= 1) {
-        subspace.clear();
-    } else if (subspace.size() == size_t(param.maxsub())) {
-        subspace.erase(subspace.begin());
-        Q = Q(Slice(1, -1), Slice(1, -1));
-    }
+    kain_trim(subspace, Q);
 
     do_step_restriction(world, amo, amo_new, "alpha");
     orthonormalize(world, amo_new, param.nalpha());
@@ -2150,6 +2751,10 @@ void SCF::solve(World& world) {
     bool do_this_iter = true;
     bool converged = false;
 
+    // Every orbital source (guess, restart, NWChem, the virtual step-down) rebuilds
+    // aocc/bocc as 1 below nalpha/nbeta and 0 above; the input list overrides that here.
+    apply_explicit_occupations(world);
+
     // Shrink subspace until stop localizing/canonicalizing--- probably not a good idea
     // int maxsub_save = param.maxsub;
     // param.maxsub = 2;
@@ -2167,69 +2772,99 @@ void SCF::solve(World& world) {
         //     //do_this_iter = false;
         //     param.maxsub = maxsub_save;
         // }
-        const bool tile_localize = true;
-        if (tile_localize) {
-            if (param.do_localize() && do_this_iter) {
-                START_TIMER(world);
-                Localizer localizer(world, aobasis, molecule, ao);
-                localizer.set_method(param.localize_method());
-                MolecularOrbitals<double, 3> mo(amo, aeps, {}, aocc, aset);
-                tensorT UT = localizer.compute_localization_matrix(world, mo, iter == 0);
-                UT.screen(trantol);
+        // Tiling the transform bounds the transient memory of the rotated orbitals, which only
+        // threatens at high precision. Below that it only buys an extra truncation per tile.
+        // Take the untiled path except at the tight protocols.
+        const bool tile_localize = FunctionDefaults<3>::get_thresh() < 1.e-7;
 
-                size_t min_tile = 10;
-                size_t ntile = std::min(amo.size(), min_tile);
-                vecfuncT new_amo = zero_functions<double,3>(world, amo.size());  
-
-                for (size_t ilo=0; ilo<amo.size(); ilo+=ntile){
-                    size_t iend = std::min(ilo+ntile,amo.size());
-                    auto U_slice = copy(transpose(UT)(_,Slice(ilo,iend-1)));
-
-                    auto tmp_amo = transform(world, amo, U_slice);
-
-                    truncate(world, tmp_amo);
-
-                    for (size_t i = ilo; i<iend; ++i){
-                        new_amo[i] += tmp_amo[i-ilo];
-                    }
+        // Rotate one spin's orbitals by its localization matrix. When tiled it rotates min_tile
+        // orbitals at a time, bounding the transient to that many functions rather than all of them.
+        auto rotate_orbitals = [&world, tile_localize](vecfuncT& v, const tensorT& UT) {
+            if (tile_localize) {
+                const size_t min_tile = 10;
+                const size_t ntile = std::min(v.size(), min_tile);
+                vecfuncT rotated(v.size());
+                for (size_t ilo = 0; ilo < v.size(); ilo += ntile) {
+                    const size_t iend = std::min(ilo + ntile, v.size());
+                    auto U_slice = copy(transpose(UT)(_, Slice(ilo, iend - 1)));
+                    auto tmp = transform(world, v, U_slice);
+                    truncate(world, tmp);
+                    for (size_t i = ilo; i < iend; ++i) rotated[i] = tmp[i - ilo];
                 }
-                normalize(world, new_amo);
-                amo = new_amo;
-
-                if (!param.spin_restricted() && param.nbeta() != 0) {
-
-                    MolecularOrbitals<double, 3> mo(bmo, beps, {}, bocc, bset);
-                    tensorT UT = localizer.compute_localization_matrix(world, mo, iter == 0);
-                    UT.screen(trantol);
-                    bmo = transform(world, bmo, transpose(UT));
-                    truncate(world, bmo);
-                    normalize(world, bmo);
-                }
-                END_TIMER(world, "localize");
+                v = rotated;
+            } else {
+                v = transform(world, v, transpose(UT));
+                truncate(world, v);
             }
-        } else {
-            if (param.do_localize() && do_this_iter) {
-                START_TIMER(world);
-                Localizer localizer(world, aobasis, molecule, ao);
-                localizer.set_method(param.localize_method());
-                MolecularOrbitals<double, 3> mo(amo, aeps, {}, aocc, aset);
+            normalize(world, v);
+        };
+
+        // Applying a near-identity localization rotation churns the trees and de-syncs
+        // the KAIN history (the stored subspace is never rotated), so skip the transform
+        // when the localizer barely moved anything: accumulated drift re-engages it by
+        // growing past the threshold on a later iteration.
+        auto max_offdiag = [](const tensorT& U) {
+            double m = 0.0;
+            for (long i = 0; i < U.dim(0); ++i)
+                for (long j = 0; j < U.dim(1); ++j)
+                    if (i != j) m = std::max(m, std::abs(U(i, j)));
+            return m;
+        };
+        const double localize_skip_tol = 0.01;
+
+        if (param.do_localize() && do_this_iter) {
+            START_TIMER(world);
+            Localizer localizer(world, aobasis, molecule, ao);
+            localizer.set_method(param.localize_method());
+            double t_matrix = 0.0, t_transform = 0.0;
+            {
+                // Localize the occupied orbitals only. Virtuals (nvalpha > 0) must not
+                // enter: a set spanning the occupation boundary licenses
+                // determinant-changing rotations, and even fenced virtuals are wanted
+                // canonical for eigenvalue analysis, not gauge-churned every iteration.
+                const size_t nocc = param.nalpha();
+                vecfuncT amo_occ(amo.begin(), amo.begin() + nocc);
+                MolecularOrbitals<double, 3> mo(amo_occ, copy(aeps(Slice(0, long(nocc) - 1))), {},
+                                                copy(aocc(Slice(0, long(nocc) - 1))),
+                                                std::vector<int>(aset.begin(), aset.begin() + nocc));
+                localizer.set_pivot_state(&localize_pivot_state_a);
+                const double t_loc0 = wall_time();
                 tensorT UT = localizer.compute_localization_matrix(world, mo, iter == 0);
-                UT.screen(trantol);
-                amo = transform(world, amo, transpose(UT));
-                truncate(world, amo);
-                normalize(world, amo);
-
-                if (!param.spin_restricted() && param.nbeta() != 0) {
-
-                    MolecularOrbitals<double, 3> mo(bmo, beps, {}, bocc, bset);
-                    tensorT UT = localizer.compute_localization_matrix(world, mo, iter == 0);
+                const double t_loc1 = wall_time();
+                const double offdiag = max_offdiag(UT);
+                if (offdiag > localize_skip_tol) {
                     UT.screen(trantol);
-                    bmo = transform(world, bmo, transpose(UT));
-                    truncate(world, bmo);
-                    normalize(world, bmo);
+                    rotate_orbitals(amo_occ, UT);
+                    for (size_t i = 0; i < nocc; ++i) amo[i] = amo_occ[i];
+                } else if (world.rank() == 0 && param.print_level() >= 3) {
+                    printf("  localize: rotation skipped (max offdiag %.1e)\n", offdiag);
                 }
-                END_TIMER(world, "localize");
+                t_matrix += t_loc1 - t_loc0;
+                t_transform += wall_time() - t_loc1;
             }
+            if (!param.spin_restricted() && param.nbeta() != 0) {
+                const size_t noccb = param.nbeta();
+                vecfuncT bmo_occ(bmo.begin(), bmo.begin() + noccb);
+                MolecularOrbitals<double, 3> mo(bmo_occ, copy(beps(Slice(0, long(noccb) - 1))), {},
+                                                copy(bocc(Slice(0, long(noccb) - 1))),
+                                                std::vector<int>(bset.begin(), bset.begin() + noccb));
+                localizer.set_pivot_state(&localize_pivot_state_b);
+                const double t_loc0 = wall_time();
+                tensorT UT = localizer.compute_localization_matrix(world, mo, iter == 0);
+                const double t_loc1 = wall_time();
+                if (max_offdiag(UT) > localize_skip_tol) {
+                    UT.screen(trantol);
+                    rotate_orbitals(bmo_occ, UT);
+                    for (size_t i = 0; i < noccb; ++i) bmo[i] = bmo_occ[i];
+                }
+                t_matrix += t_loc1 - t_loc0;
+                t_transform += wall_time() - t_loc1;
+            }
+            // split the localize timer: matrix = the localizer optimization (incl. U
+            // replication); transform = screen + the nmo^2 orbital rotation
+            if (world.rank() == 0 && param.print_level() >= 3)
+                printf("  localize phases: matrix %.2fs transform %.2fs\n", t_matrix, t_transform);
+            END_TIMER(world, "localize");
         }
 
         START_TIMER(world);
@@ -2337,10 +2972,11 @@ void SCF::solve(World& world) {
         }
 
         double enrep = molecule.nuclear_repulsion_energy();
+        double edisp = dispersion.energy(world, molecule);
         double ekinetic = ekina + ekinb;
         double enonlocal = enla + enlb;
         double exc = exca + excb;
-        double etot = ekinetic + enuclear + ecoulomb + exc + enrep + enonlocal + epcm;
+        double etot = ekinetic + enuclear + ecoulomb + exc + enrep + enonlocal + epcm + edisp;
         current_energy = etot;
         //esol = etot;
 
@@ -2361,6 +2997,8 @@ void SCF::solve(World& world) {
             printf("                  PCM %16.8f\n", epcm);
             printf(" exchange-correlation %16.8f\n", exc);
             printf("    nuclear-repulsion %16.8f\n", enrep);
+            if (dispersion.active())
+                printf("      dispersion (D3) %16.8f\n", edisp);
             printf("                total %16.8f\n\n", etot);
         }
         e_data.add_data({{"e_kinetic", ekinetic},
@@ -2368,6 +3006,7 @@ void SCF::solve(World& world) {
                          {"e_nuclear", enuclear},
                          {"e_coulomb", ecoulomb},
                          {"e_pcm",     epcm},
+                         {"e_disp",    edisp},
                          {"e_xc",      exc},
                          {"e_nrep",    enrep},
                          {"e_tot",     etot}});
@@ -2388,10 +3027,25 @@ void SCF::solve(World& world) {
 
             // do diagonalization etc if this is the last iteration, even if the calculation didn't converge
             if (converged || iter == param.maxiter() - 1) {
+                // record what we converged *to*, on every rank and independent of
+                // the print level: the restart logic keys off these two fields.
+                // The values are the thresholds of this protocol level, not
+                // param.econv()/param.dconv() -- at a loose level the latter
+                // over-claims, at the final level it under-claims.
+                if (converged) {
+                    converged_for_thresh=FunctionDefaults<3>::get_thresh();
+                    converged_for_dconv=dconv;
+                }
                 if (world.rank() == 0 && converged and (param.print_level() > 1)) {
                     print("\nConverged!\n");
-                    converged_for_thresh=param.econv();
-                    converged_for_dconv=param.dconv();
+                }
+
+                // the virtuals were last canonicalized before the previous
+                // update; rotate them once more for the published vectors
+                if (param.do_localize()) {
+                    canonicalize_virtuals(world, focka, amo, Vpsia, param.nalpha(), true);
+                    if (param.nbeta() != 0 && !param.spin_restricted())
+                        canonicalize_virtuals(world, fockb, bmo, Vpsib, param.nbeta(), true);
                 }
 
                 // Diagonalize to get the eigenvalues and if desired the final eigenvectors

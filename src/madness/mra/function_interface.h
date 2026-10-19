@@ -84,7 +84,7 @@ namespace madness {
 	    }
 
 	    /// Can we screen this function based on the bounding box information?
-	    virtual bool screened(const Vector<double,NDIM>& c1, const Vector<double,NDIM>& c2) const {
+	    virtual bool screened(const Vector<double,NDIM>&, const Vector<double,NDIM>&) const {
 	        return false;
 	    }
 
@@ -96,27 +96,27 @@ MADNESS_PRAGMA_GCC(diagnostic ignored "-Woverloaded-virtual")
 MADNESS_PRAGMA_CLANG(diagnostic push)
 MADNESS_PRAGMA_CLANG(diagnostic ignored "-Woverloaded-virtual")
 
-	    virtual void operator()(const Vector<double*,1>& xvals, T* fvals, int npts) const {
+	    virtual void operator()(const Vector<double*,1>&, T*, int) const {
 	        MADNESS_EXCEPTION("FunctionFunctorInterface: This function should not be called!", 0);
 	    }
 
-	    virtual void operator()(const Vector<double*,2>& xvals, T* fvals, int npts) const {
+	    virtual void operator()(const Vector<double*,2>&, T*, int) const {
 	        MADNESS_EXCEPTION("FunctionFunctorInterface: This function should not be called!", 0);
 	    }
 
-	    virtual void operator()(const Vector<double*,3>& xvals, T* fvals, int npts) const {
+	    virtual void operator()(const Vector<double*,3>&, T*, int) const {
 	        MADNESS_EXCEPTION("FunctionFunctorInterface: This function should not be called!", 0);
 	    }
 
-	    virtual void operator()(const Vector<double*,4>& xvals, T* fvals, int npts) const {
+	    virtual void operator()(const Vector<double*,4>&, T*, int) const {
 	        MADNESS_EXCEPTION("FunctionFunctorInterface: This function should not be called!", 0);
 	    }
 
-	    virtual void operator()(const Vector<double*,5>& xvals, T* fvals, int npts) const {
+	    virtual void operator()(const Vector<double*,5>&, T*, int) const {
 	        MADNESS_EXCEPTION("FunctionFunctorInterface: This function should not be called!", 0);
 	    }
 
-	    virtual void operator()(const Vector<double*,6>& xvals, T* fvals, int npts) const {
+	    virtual void operator()(const Vector<double*,6>&, T*, int) const {
 	        MADNESS_EXCEPTION("FunctionFunctorInterface: This function should not be called!", 0);
 	    }
 MADNESS_PRAGMA_CLANG(diagnostic pop)
@@ -140,7 +140,7 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
 	        return coeffT();
 	    }
 
-	    virtual coeffT values(const keyT& key, const Tensor<double>& tensor) const {
+	    virtual coeffT values(const keyT&, const Tensor<double>&) const {
 	        MADNESS_EXCEPTION("implement values for FunctionFunctorInterface",0);
 	        return coeffT();
 	    }
@@ -191,6 +191,8 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
 		std::vector<std::shared_ptr<implL>> impl_p2_vector;	///< supposedly orbital 2
 
 	public:
+
+		using FunctionFunctorInterface<T,NDIM>::operator();
 
 		/// constructor takes its Factory
 		CompositeFunctorInterface(World& world, std::vector<pimplT> ket, pimplT g12,
@@ -276,6 +278,8 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
 		typedef Vector<double, NDIM> coordT; ///< Type of vector holding coordinates
         typedef GenTensor<T> coeffT;
 
+        using FunctionFunctorInterface<T,NDIM>::operator();
+
 		T (*f)(const coordT&);
 
 		ElementaryInterface(T (*f)(const coordT&)) : f(f) {}
@@ -297,6 +301,8 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
         typedef Vector<double, NDIM> coordT; ///< Type of vector holding coordinates
         typedef GenTensor<T> coeffT;
 
+        using FunctionFunctorInterface<T,NDIM>::operator();
+
         opT op;
 
         FunctorInterface(const opT& op) : op(op) {}
@@ -314,6 +320,9 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
         const opT op;
 
     public:
+
+        using FunctionFunctorInterface<T,NDIM>::operator();
+
         FunctionInterface(const opT& op) : op(op) {}
 
         T operator()(const coordT& coord) const {return op(coord);}
@@ -334,6 +343,8 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
     protected:
         static constexpr std::size_t LDIM=NDIM/2;
 	public:
+
+		using FunctionFunctorInterface<T,NDIM>::operator();
 
 		typedef GenTensor<T> coeffT;
 
@@ -365,7 +376,7 @@ MADNESS_PRAGMA_GCC(diagnostic pop)
             return coeffT(map_coeff(c),FunctionDefaults<NDIM>::get_thresh(),TT_FULL);
 		}
 
-		T operator()(const Vector<double, NDIM>& x) const {
+		T operator()(const Vector<double, NDIM>&) const {
 			print("there is no operator()(coordT&) in TwoElectronInterface, for good reason");
 			MADNESS_ASSERT(0);
 			return T(0);

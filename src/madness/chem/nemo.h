@@ -56,6 +56,7 @@
 #include<madness/chem/pcm.h>
 #include<madness/chem/AC.h>
 #include<madness/chem/pointgroupsymmetry.h>
+#include "Results.h"
 #include"madness/mra/commandlineparser.h"
 #include<madness/chem/QCPropertyInterface.h>
 #include <madness/world/timing_utilities.h>
@@ -70,7 +71,7 @@ class NemoBase : public MolecularOptimizationTargetInterface {
 
 public:
 
-	NemoBase(World& w) : world(w) {}
+	explicit NemoBase(World& w) : world(w) {}
 
     virtual ~NemoBase() {}
 
@@ -91,8 +92,11 @@ public:
 
         if (nemo.size()==0) return;
         World& world=nemo[0].world();
-		// compute the norm of the reconstructed orbitals, includes the factor
-		std::vector<Function<T,NDIM> > mos = (metric.is_initialized()) ? metric*nemo : nemo;
+		// compute the norm of the reconstructed orbitals, includes the factor; the
+		// metric spans the molecule, the nemos are local: screened like the other
+		// nemo products (SCF::vtol)
+		std::vector<Function<T,NDIM> > mos = (metric.is_initialized())
+				? mul_sparse(world, metric, nemo, FunctionDefaults<NDIM>::get_thresh()*0.1) : nemo;
 		std::vector<double> norms = norm2s(world, mos);
 
 		// scale the nemos, excludes the nuclear correlation factor
@@ -100,6 +104,34 @@ public:
 		for (std::size_t i = 0; i < norms.size(); ++i)
 			invnorm[i] = 1.0 / norms[i];
 		scale(world, nemo, invnorm);
+	}
+
+	/// reproject a set of nemos onto the current k and thresh
+
+	/// The counterpart of SCF::project (chem/SCF.cc) for regularized orbitals.
+	/// SCF::project must NOT be used here: it normalizes with the plain L2
+	/// metric, while nemos are normalized against R^2. Without this, a protocol
+	/// step that changes k leaves the nemos at the old polynomial order while
+	/// FunctionDefaults, R and the potentials have already moved to the new one.
+	template<typename T, std::size_t NDIM>
+	void reproject_mos(std::vector<Function<T,NDIM> >& nemo,
+			const Function<double,NDIM>& metric) const {
+
+		if (nemo.size()==0) return;
+		const int k=FunctionDefaults<NDIM>::get_k();
+		const double thresh=FunctionDefaults<NDIM>::get_thresh();
+		if (nemo.front().k()==k) {           // nothing to do but retighten
+			set_thresh(world,nemo,thresh);
+			return;
+		}
+
+		if (world.rank()==0) print("reprojecting nemos from k =",nemo.front().k(),"to k =",k);
+		reconstruct(world,nemo);
+		for (std::size_t i=0; i<nemo.size(); ++i)
+			nemo[i]=madness::project(nemo[i],k,thresh,false);
+		world.gop.fence();
+		truncate(world,nemo);
+		normalize(nemo,metric);
 	}
 
 	template<typename T>
@@ -119,7 +151,8 @@ public:
 	    normalize(nemo,metric);
 	    double maxq;
 	    do {
-			std::vector<Function<T,NDIM> > Rnemo = (metric.is_initialized()) ? metric*nemo : nemo;
+			std::vector<Function<T,NDIM> > Rnemo = (metric.is_initialized())
+					? mul_sparse(world, metric, nemo, FunctionDefaults<NDIM>::get_thresh()*0.1) : nemo;
 	        Tensor<T> Q = Q2(matrix_inner(world, Rnemo, Rnemo));
 	        maxq=0.0;
 	        for (int i=0; i<Q.dim(0); ++i)
@@ -142,21 +175,31 @@ public:
 
     virtual bool need_recompute_factors_and_potentials(const double thresh) const {
         bool need=false;
+        const int k=FunctionDefaults<3>::get_k();
         if ((not R.is_initialized()) or (R.thresh()>thresh)) need=true;
         if (not ncf) need=true;
         if ((not R_square.is_initialized()) or (R_square.thresh()>thresh)) need=true;
+        if ((not U1dotU1.is_initialized()) or (U1dotU1.thresh()>thresh)) need=true;
+        // k must be checked independently of thresh: re-entering a protocol at
+        // the same threshold but a different k (a restart, or a user-pinned k)
+        // would otherwise reuse R and R_square at the old k and silently mix
+        // polynomial orders in every product with the nemos.
+        if (R.is_initialized() and R.k()!=k) need=true;
+        if (R_square.is_initialized() and R_square.k()!=k) need=true;
+        if (U1dotU1.is_initialized() and U1dotU1.k()!=k) need=true;
         return need;
     };
 
     virtual void invalidate_factors_and_potentials() {
         R.clear();
         R_square.clear();
+        U1dotU1.clear();
         ncf.reset();
     };
 
     void construct_nuclear_correlation_factor(const Molecule& molecule,
-			const std::shared_ptr<PotentialManager> pm,
-			const std::pair<std::string,double> ncf_parameter) {
+			const std::shared_ptr<PotentialManager>& pm,
+			const std::pair<std::string,double>& ncf_parameter) {
 
 	    // construct the nuclear correlation factor:
 	    if (not ncf) {
@@ -169,6 +212,11 @@ public:
 	    R.set_thresh(FunctionDefaults<3>::get_thresh());
 	    R_square = ncf->square();
 	    R_square.set_thresh(FunctionDefaults<3>::get_thresh());
+	    // from its functor, not from the squared U1 components: their smoothed unit
+	    // vector vanishes at the nuclei (see assemble_nemo_ddens in xcfunctional_libxc.cc)
+	    U1dotU1 = real_factory_3d(world).special_level(NuclearCorrelationFactor::ncf_special_level)
+	            .functor(NuclearCorrelationFactor::U1_dot_U1_functor(ncf.get()));
+	    U1dotU1.set_thresh(FunctionDefaults<3>::get_thresh());
 	}
 
 	/// compute the nuclear gradients
@@ -190,9 +238,7 @@ public:
 		//auto worldid=world.id();
 		world.gop.fence();
 		real_function_3d dens=dot(world,nemo,nemo)*R_square;
-	    real_function_3d U1dotU1=real_factory_3d(world)
-	    		.functor(NuclearCorrelationFactor::U1_dot_U1_functor(ncf.get()));
-	    double ke1=inner(dens,U1dotU1);
+	    double ke1=inner(dens,U1dotU1);   // cached beside R and R_square
 
 	    double ke2=0.0;
 	    double ke3=0.0;
@@ -318,6 +364,9 @@ public:
     /// the square of the nuclear correlation factor
     real_function_3d R_square;
 
+    /// U1.U1 = |grad R|^2 / R^2, by which the physical kinetic energy exceeds the regularized one
+    real_function_3d U1dotU1;
+
 
 };
 
@@ -363,6 +412,7 @@ public:
 
 
 public:
+	std::filesystem::path work_dir;
 
 	/// ctor
 
@@ -372,8 +422,11 @@ public:
 
     Nemo(World& world, const commandlineparser& parser);
 
+	/// \p pcm_param defaults to the bare `pcm` group; the solvent still arrives from
+	/// param.pcm_data() via PCMParameters::set_derived_values, so a caller that never
+	/// parsed a deck keeps working.
 	Nemo(World& world, const CalculationParameters& param, const NemoCalculationParameters& nemo_param,
-		const Molecule& molecule);
+		const Molecule& molecule, const PCMParameters& pcm_param = PCMParameters());
 
     std::string name() const {return "nemo";}
     bool selftest() {return false;}
@@ -389,7 +442,11 @@ public:
         print("nemo --print_parameters\n");
         print("You can perform a simple calculation by running\n");
         print("nemo --geometry=h2o.xyz\n");
-        print("provided you have an xyz file in your directory.");
+        print("provided you have an xyz file in your directory.\n\n");
+        print("To see what a restart archive holds -- geometry, k, the precision it");
+        print("converged to, whether it is moldft or nemo orbitals -- without starting");
+        print("a calculation:\n");
+        print("nemo --restart_info=<prefix>\n");
 
     }
 
@@ -424,7 +481,7 @@ public:
 	bool provides_gradient() const {return true;}
 
 	/// returns the molecular hessian matrix at structure x
-	Tensor<double> hessian(const Tensor<double>& x);
+	VibrationalResults hessian(const Tensor<double>& x);
 
 	/// construct the fock operator based on the calculation parameters (K or XC?)
 	virtual std::shared_ptr<Fock<double,3>> make_fock_operator() const;
@@ -457,9 +514,9 @@ public:
 	/// @param[in]  iatom   the atom A to be moved
 	/// @param[in]  iaxis   the coordinate X of iatom to be moved
 	/// @return     \ket{i^X} or \ket{F^\perp}
-	vecfuncT solve_cphf(const size_t iatom, const int iaxis, const Tensor<double> fock,
+	vecfuncT solve_cphf(const size_t iatom, const int iaxis, const Tensor<double>& fock,
 	        const vecfuncT& guess, const vecfuncT& rhsconst,
-	        const Tensor<double> incomplete_hessian, const vecfuncT& parallel,
+	        const Tensor<double>& incomplete_hessian, const vecfuncT& parallel,
 	        const SCFProtocol& p, const std::string& xc_data) const;
 
 	/// solve the CPHF equation for all displacements
@@ -543,29 +600,6 @@ public:
 
     /// the Laplacian of the density
 
-    /// The Laplacian should currently only be used for subsequent convolution
-    /// with a Green's function (which is reasonably stable), but not on its own!
-    ///
-    /// The Laplacian of the cuspy density is numerically fairly unstable:
-    ///  - a singular term may be rewritten using the nuclear potential (see below)
-    ///  - the Laplacian of the regularized density is still very noisy
-    ///
-    /// It may be computed as
-    /// \f[
-    ///   \Delta \rho = \Delta (R^2 \rho_R)
-    ///          = \Delta (R^2) \rho_R + 2\nabla R \nabla \rho_R + R^2 \Delta \rho_R
-    ///          = 2 R^2 U1^2 \rho_R -4 R^2 ( U-V ) \rho_R + R^2 \Delta\rho_R
-    /// \f]
-    /// where we can use the identity
-    /// \f[
-    ///   U=V + R^{-1}[T,R]
-    ///   -2 R (U-V) = \Delta R + 2\nabla R\dot \nabla
-    /// \f]
-    /// first term comes from the definition of the U potential as the commutator
-    /// over the kinetic energy (aka the Laplacian)
-    /// @param[in]  rhonemo    the regularized density \rho_R
-    /// @return     the laplacian of the reconstructed density \Delta (R^2\rho_R)
-    real_function_3d make_laplacian_density(const real_function_3d& rhonemo) const;
 
     /// compute the kinetic energy potential using Eq. (16) of
     /// R. A. King and N. C. Handy, “Kinetic energy functionals from the Kohn–Sham potential,”
@@ -636,6 +670,8 @@ protected:
 	/// adapt the thresholds consistently to a common value
     void set_protocol(const double thresh) {
 
+        // sets FunctionDefaults, including k -- which SCF::set_protocol derives
+        // from thresh unless the user pinned it
         calc->set_protocol<3>(world,thresh);
 
         if (need_recompute_factors_and_potentials(thresh)) {
@@ -649,9 +685,24 @@ protected:
         poisson = std::shared_ptr<real_convolution_3d>(
                 CoulombOperatorPtr(world, get_calc_param().lo(), FunctionDefaults<3>::get_thresh()));
 
-        // set thresholds for the MOs
-        set_thresh(world,calc->amo,thresh);
-        set_thresh(world,calc->bmo,thresh);
+        // Bring the MOs to the new k and thresh. This must come AFTER the ncf
+        // has been rebuilt, because the normalization inside reproject_mos uses
+        // R as the metric and would otherwise mix polynomial orders itself.
+        reproject_mos(calc->amo,R);
+        reproject_mos(calc->bmo,R);
+
+        // The AO basis has to follow k as well. moldft reprojects it inside its
+        // protocol loop (SCF.h, MolecularEnergy::value); nemo projected it once
+        // outside the ladder, so a k change left it behind -- and Nemo::localize
+        // hands it to the Localizer next to the freshly reprojected nemos.
+        const int k=FunctionDefaults<3>::get_k();
+        if (calc->ao.size()>0 and calc->ao.front().k()!=k) {
+            if (world.rank()==0 and get_calc_param().print_level()>2)
+                print("reprojecting the AO basis from k =",calc->ao.front().k(),"to k =",k);
+            calc->ao.clear();
+            world.gop.fence();
+            calc->ao=calc->project_ao_basis(world,calc->aobasis);
+        }
 
     }
 
@@ -659,21 +710,65 @@ protected:
 	double solve(const SCFProtocol& proto);
 
     /// given nemos, compute the HF energy using the regularized expressions for T and V
-    std::vector<double> compute_energy_regularized(const vecfuncT& nemo, const vecfuncT& Jnemo,
-            const vecfuncT& Knemo, const vecfuncT& Unemo) const;
+
+    /// @param[in]  R2nemo   R^2 * nemo, the bra of every expectation value
+    /// @param[in]  kinetic  <R^2 F_i | -1/2 nabla^2 | F_j>, the kinetic block of the Fock matrix;
+    ///                      the regularized kinetic energy is twice its trace
+    std::vector<double> compute_energy_regularized(const vecfuncT& nemo, const vecfuncT& R2nemo,
+            const vecfuncT& Jnemo, const vecfuncT& Knemo, const vecfuncT& Unemo,
+            const Tensor<double>& kinetic) const;
 
 	/// compute the reconstructed orbitals, and all potentials applied on nemo
 
 	/// to use these potentials in the fock matrix computation they must
 	/// be multiplied by the nuclear correlation factor
 	/// @param[in]	nemo	the nemo orbitals
+	/// @param[in]	R2nemo	R^2 * nemo, the bra of the exchange operator
 	/// @param[out]	Jnemo	Coulomb operator applied on the nemos
 	/// @param[out]	Knemo	exchange operator applied on the nemos
 	/// @param[out]	pcmnemo	PCM (solvent) potential applied on the nemos
 	/// @param[out]	Unemo	regularized nuclear potential applied on the nemos
-	void compute_nemo_potentials(const vecfuncT& nemo,
+	/// @param[out] xcflux  the vector field Y_i that the orbital update pushes
+	///                     through the Green's function, see
+	///                     XCOperator::weak_xc_terms. Assigned in the weak form
+	///                     only and left EMPTY otherwise, which is how the caller
+	///                     tells the two forms apart.
+	/// @param[out] fock_xc the xc block of the Fock matrix. In the weak form it
+	///                     cannot be recovered from xcnemo any more, because what
+	///                     is missing from xcnemo is exactly the term that has no
+	///                     multiplicative representation. Assigned in the weak
+	///                     form only and left untouched otherwise.
+	void compute_nemo_potentials(const vecfuncT& nemo, const vecfuncT& R2nemo,
 			vecfuncT& Jnemo, vecfuncT& Knemo, vecfuncT& xcnemo, vecfuncT& pcmnemo,
-			vecfuncT& Unemo) const;
+			vecfuncT& Unemo, std::vector<vecfuncT>& xcflux, tensorT& fock_xc) const {
+		compute_nemo_potentials_impl(nemo, R2nemo, Jnemo, Knemo, xcnemo, pcmnemo, Unemo,
+				xcflux, fock_xc, true);
+	}
+
+	/// compute all potentials applied on nemo, without the weak-form split
+
+	/// The pre-weak-form signature, kept for callers that have no use for the
+	/// flux. It never opts in to the weak form, whatever `xc_weak_gga` says, so
+	/// xcnemo always carries the complete multiplicative xc potential and the
+	/// xc block of the Fock matrix can be read off it as before. Silently
+	/// discarding xcflux instead would drop the semilocal term.
+	void compute_nemo_potentials(const vecfuncT& nemo, const vecfuncT& R2nemo,
+			vecfuncT& Jnemo, vecfuncT& Knemo, vecfuncT& xcnemo, vecfuncT& pcmnemo,
+			vecfuncT& Unemo) const {
+		std::vector<vecfuncT> xcflux;
+		tensorT fock_xc;
+		compute_nemo_potentials_impl(nemo, R2nemo, Jnemo, Knemo, xcnemo, pcmnemo, Unemo,
+				xcflux, fock_xc, false);
+	}
+
+	/// implementation of both compute_nemo_potentials forms
+
+	/// @param[in]	allow_weak	opt in to the weak form; it is then used iff
+	///							the `xc_weak_gga` parameter asks for it
+	void compute_nemo_potentials_impl(const vecfuncT& nemo, const vecfuncT& R2nemo,
+			vecfuncT& Jnemo, vecfuncT& Knemo, vecfuncT& xcnemo, vecfuncT& pcmnemo,
+			vecfuncT& Unemo, std::vector<vecfuncT>& xcflux, tensorT& fock_xc,
+			const bool allow_weak) const;
 
 	/// return the Coulomb potential
 	real_function_3d get_coulomb_potential(const vecfuncT& psi) const;
@@ -705,7 +800,11 @@ public:
 
 	bool do_pcm() const {return get_calc_param().pcm_data() != "none";}
 	
-	bool do_ac() const {return get_calc_param().ac_data() != "none";}
+	/// the asymptotic correction is defunct: its `ac_data` parameter was removed,
+	/// and the code paths guarded by do_ac() are kept but never taken. It was
+	/// never reconciled with the weak xc form, whose Fock block is built from the
+	/// uncorrected potential.
+	bool do_ac() const {return false;}
 
 	AC<3> get_ac() const {return ac;}
 

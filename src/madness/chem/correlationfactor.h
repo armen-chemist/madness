@@ -76,6 +76,9 @@
 #include<madness/chem/molecule.h>
 #include<madness/chem/potentialmanager.h>
 #include<madness/chem/atomutil.h>
+#include <algorithm>
+#include <limits>
+#include <numeric>
 
 namespace madness {
 
@@ -92,10 +95,19 @@ public:
 	/// @param[in]	mol molecule with the sites of the nuclei
 	NuclearCorrelationFactor(World& world, const Molecule& mol)
 		: world(world), vtol(FunctionDefaults<3>::get_thresh()*0.1)
-		, eprec(mol.get_eprec()), molecule(mol) {}
+		, eprec(mol.get_eprec()), molecule(mol), all_atoms_(mol.natom()) {
+		std::iota(all_atoms_.begin(),all_atoms_.end(),0);
+	}
 
 	/// virtual destructor
 	virtual ~NuclearCorrelationFactor() {};
+
+	/// projection depth of the factor's functions at the nuclei
+
+	/// The functors' default (6) can miss the exp(-a Z r) features, of width 1/(aZ), at a loose threshold for
+	/// Z above ~30: on NBr3 and PBr3 the k6 rung then starts hundreds of hartree off and never converges. 15 is
+	/// what the nuclear-potential functors use (potentialmanager.h); it costs seconds per rung.
+	static constexpr int ncf_special_level=15;
 
 	/// initialize the regularized potentials U1 and U2
 	void initialize(const double vtol1) {
@@ -103,24 +115,33 @@ public:
 	    // set threshold for projections
 	    vtol=vtol1;
 
+		// Discard any previous set. initialize() is called again on every
+		// protocol step, and U1(axis) reads U1_function[axis] -- i.e. the FIRST
+		// three entries. Appending therefore left the accessor pinned to the
+		// functions built on the first call: at the initial (loosest) threshold,
+		// and at the initial k. With a pinned k that is a silent loss of
+		// precision for the rest of the ladder; with k varying across the
+		// protocol it is a tensor conformance failure.
+		U1_function.clear();
+
 		// construct the potential functions
 		// keep tighter threshold for orthogonalization
 		for (int axis=0; axis<3; ++axis) {
 			functorT U1f=functorT(new U1_functor(this,axis));
-			U1_function.push_back(real_factory_3d(world).thresh(vtol)
+			U1_function.push_back(real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
 					.functor(U1f).truncate_on_project());
 			U1_function.back().set_thresh(FunctionDefaults<3>::get_thresh());
 		}
 
 		// U2 is the term -S"/S - Z/r
 		functorT U2f=functorT(new U2_functor(this));
-		U2_function=real_factory_3d(world).thresh(vtol)
+		U2_function=real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
 				.functor(U2f).truncate_on_project();
 		U2_function.set_thresh(FunctionDefaults<3>::get_thresh());
 
 		// U3 is the term SA'/SA . SB'/SB
 		functorT U3f=functorT(new U3_functor(this));
-		real_function_3d tmp=real_factory_3d(world).thresh(vtol)
+		real_function_3d tmp=real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
 				.functor(U3f).truncate_on_project();
 		tmp.set_thresh(FunctionDefaults<3>::get_thresh());
 		U2_function+=tmp;
@@ -150,7 +171,7 @@ public:
 	/// return the nuclear correlation factor
 	virtual real_function_3d function() const {
 		functorT Rf=functorT(new R_functor(this,1));
-		real_function_3d r=real_factory_3d(world).thresh(vtol)
+		real_function_3d r=real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
 				.functor(Rf).truncate_on_project();
 		return r;
 	}
@@ -158,7 +179,7 @@ public:
 	/// return the square of the nuclear correlation factor
 	virtual real_function_3d square() const {
 	    R_functor r(this,2);
-		real_function_3d R2=real_factory_3d(world).thresh(vtol)
+		real_function_3d R2=real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
 				.functor(r).truncate_on_project();
 		return R2;
 	}
@@ -169,7 +190,7 @@ public:
     /// @return R^2 * \frac{\partial Z_A/r_{1A}}{\partial X_A}
     virtual real_function_3d square_times_V_derivative(const int iatom, const int axis) const {
         square_times_V_derivative_functor func(this,molecule,iatom,axis);
-        real_function_3d R2=real_factory_3d(world).thresh(vtol)
+        real_function_3d R2=real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
                 .functor(func).truncate_on_project();
         return R2;
     }
@@ -177,7 +198,7 @@ public:
 	/// return the inverse nuclear correlation factor
 	virtual real_function_3d inverse() const {
 	    R_functor r(this,-1);
-		real_function_3d R_inverse=real_factory_3d(world).thresh(vtol)
+		real_function_3d R_inverse=real_factory_3d(world).thresh(vtol).special_level(ncf_special_level)
 				.functor(r).truncate_on_project();
 		return R_inverse;
 	}
@@ -212,6 +233,7 @@ private:
 
 	/// the molecule
 	const Molecule& molecule;
+	std::vector<size_t> all_atoms_;
 
 protected:
 	/// the three components of the U1 potential
@@ -257,6 +279,44 @@ public:
 	///    \rho = |\vec r - \vec R_A |
 	/// \f]
 	virtual double Sr_div_S(const double& r, const double& Z) const = 0;
+
+	/// distance from nucleus A beyond which its contributions to the functors are negligible
+
+	/// A factor that returns a finite radius guarantees that beyond it S_A - 1 and S'_A/S_A are
+	/// below ~1e-14 relative to their magnitude at the nucleus, and that S''_A/S_A equals the
+	/// Coulomb tail -Z_A/r to the same accuracy. Infinite (the default) keeps every atom in
+	/// every term.
+	virtual double screening_radius(const double /*Z*/) const {
+		return std::numeric_limits<double>::infinity();
+	}
+
+	/// indices of all atoms
+	const std::vector<size_t>& all_atoms() const {return all_atoms_;}
+
+	/// atoms whose screening sphere meets the bounding sphere of a set of points
+
+	/// The projection hands a functor all quadrature points of one box at once; an atom
+	/// screened out here is beyond its screening radius at every one of them.
+	std::vector<size_t> atoms_near(const double* x, const double* y, const double* z, const int npts) const {
+		coord_3d lo{x[0],y[0],z[0]}, hi{x[0],y[0],z[0]};
+		for (int p=1; p<npts; ++p) {
+			lo[0]=std::min(lo[0],x[p]); hi[0]=std::max(hi[0],x[p]);
+			lo[1]=std::min(lo[1],y[p]); hi[1]=std::max(hi[1],y[p]);
+			lo[2]=std::min(lo[2],z[p]); hi[2]=std::max(hi[2],z[p]);
+		}
+		coord_3d center, half;
+		for (int d=0; d<3; ++d) {
+			center[d]=0.5*(lo[d]+hi[d]);
+			half[d]=0.5*(hi[d]-lo[d]);
+		}
+		const double radius=half.normf();
+		std::vector<size_t> near;
+		for (size_t i=0; i<molecule.natom(); ++i) {
+			const Atom& atom=molecule.get_atom(i);
+			if ((center-atom.get_coords()).normf()-radius < screening_radius(atom.q)) near.push_back(i);
+		}
+		return near;
+	}
 
 	/// second derivative of the NCF with respect to the relative distance rho
     /// \f[
@@ -344,6 +404,13 @@ public:
         const double cutoff=smoothing;
         if (r>cutoff) {
             return 1.0/r*xyz;
+        } else if (r==0.0) {
+            // kk/r is 0/0 here and returns NaN. The limit is the zero vector:
+            // kk = (105/32)(r/cutoff) + O(r^3), so kk/r tends to 105/(32 cutoff)
+            // and kk/r*xyz tends to 0. Unreachable from Gauss quadrature, whose
+            // points are strictly interior, but reachable from any code that
+            // evaluates this functor on a grid containing a nuclear position.
+            return coord_3d{0.0,0.0,0.0};
         } else {
             const double xi=r/cutoff;
             const double xi2=xi*xi;
@@ -437,9 +504,24 @@ public:
 	public:
 		R_functor(const NuclearCorrelationFactor* ncf, const int e=1)
 			: ncf(ncf), exponent(e) {}
-		double operator()(const coord_3d& xyz) const {
+
+        using FunctionFunctorInterface<double,3>::operator();
+
+		double operator()(const coord_3d& xyz) const override {
+			return eval(xyz,ncf->all_atoms());
+		}
+		bool supports_vectorized() const override {return true;}
+		void operator()(const Vector<double*,3>& xv, double* fv, int npts) const override {
+			const std::vector<size_t> near=ncf->atoms_near(xv[0],xv[1],xv[2],npts);
+			for (int p=0; p<npts; ++p) {
+				const coord_3d xyz{xv[0][p],xv[1][p],xv[2][p]};
+				fv[p]=eval(xyz,near);
+			}
+		}
+		/// an atom beyond its screening radius contributes the factor 1
+		double eval(const coord_3d& xyz, const std::vector<size_t>& atoms) const {
 			double result=1.0;
-			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
+			for (const size_t i : atoms) {
 				const Atom& atom=ncf->molecule.get_atom(i);
 				const coord_3d vr1A=xyz-atom.get_coords();
 				const double r=vr1A.normf();
@@ -453,7 +535,7 @@ public:
 			}
 
 		}
-		std::vector<coord_3d> special_points() const {
+		std::vector<coord_3d> special_points() const override {
 			return ncf->molecule.get_all_coords_vec();
 		}
 	};
@@ -470,9 +552,23 @@ public:
 		U1_functor(const NuclearCorrelationFactor* ncf, const int axis)
 			: ncf(ncf), axis(axis) {}
 
-		double operator()(const coord_3d& xyz) const {
+
+        using FunctionFunctorInterface<double,3>::operator();
+
+		double operator()(const coord_3d& xyz) const override {
+			return eval(xyz,ncf->all_atoms());
+		}
+		bool supports_vectorized() const override {return true;}
+		void operator()(const Vector<double*,3>& xv, double* fv, int npts) const override {
+			const std::vector<size_t> near=ncf->atoms_near(xv[0],xv[1],xv[2],npts);
+			for (int p=0; p<npts; ++p) {
+				const coord_3d xyz{xv[0][p],xv[1][p],xv[2][p]};
+				fv[p]=eval(xyz,near);
+			}
+		}
+		double eval(const coord_3d& xyz, const std::vector<size_t>& atoms) const {
 			double result=0.0;
-			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
+			for (const size_t i : atoms) {
 				const Atom& atom=ncf->molecule.get_atom(i);
 				const coord_3d vr1A=xyz-atom.get_coords();
 				const double r=vr1A.normf();
@@ -482,7 +578,7 @@ public:
 			}
 			return result;
 		}
-		std::vector<coord_3d> special_points() const {
+		std::vector<coord_3d> special_points() const override {
 			return ncf->molecule.get_all_coords_vec();
 		}
 	};
@@ -503,8 +599,8 @@ public:
     public:
         U1_atomic_functor(const NuclearCorrelationFactor* ncf, const size_t atom,
                 const int axis) : ncf(ncf), iatom(atom), axis(axis) {}
-
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             const Atom& atom=ncf->molecule.get_atom(iatom);
             const coord_3d vr1A=xyz-atom.get_coords();
             const double r=vr1A.normf();
@@ -512,7 +608,7 @@ public:
             return ncf->Sr_div_S(r,Z)*ncf->smoothed_unitvec(vr1A)[axis];
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             std::vector< madness::Vector<double,3> > c(1);
             const Atom& atom=ncf->molecule.get_atom(iatom);
             c[0][0]=atom.x;
@@ -536,30 +632,42 @@ public:
     public:
         U1_dot_U1_functor(const NuclearCorrelationFactor* ncf) : ncf(ncf) {}
 
-        double operator()(const coord_3d& xyz) const {
-			std::vector<double> Sr_div_S(ncf->molecule.natom());
-			std::vector<coord_3d> unitvec(ncf->molecule.natom());
-			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
-				const Atom& atom=ncf->molecule.get_atom(i);
-				const coord_3d vr1A=xyz-atom.get_coords();
-				const double r=vr1A.normf();
-				Sr_div_S[i]=ncf->Sr_div_S(r,atom.q);
-				unitvec[i]=ncf->smoothed_unitvec(vr1A);
-			}
-
-			double result=0.0;
-			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
-				for (size_t j=0; j<ncf->molecule.natom(); ++j) {
-					double tmp=Sr_div_S[i]*Sr_div_S[j];
-					if (i!=j) tmp*=inner(unitvec[i],unitvec[j]);
-					result+=tmp;
-				}
-			}
-
-
-            return result;
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
+            return eval(xyz,ncf->all_atoms());
         }
-        std::vector<coord_3d> special_points() const {
+        bool supports_vectorized() const override {return true;}
+        void operator()(const Vector<double*,3>& xv, double* fv, int npts) const override {
+            const std::vector<size_t> near=ncf->atoms_near(xv[0],xv[1],xv[2],npts);
+            for (int p=0; p<npts; ++p) {
+                const coord_3d xyz{xv[0][p],xv[1][p],xv[2][p]};
+                fv[p]=eval(xyz,near);
+            }
+        }
+        double eval(const coord_3d& xyz, const std::vector<size_t>& atoms) const {
+            // sum_{AB} d_A d_B n_A.n_B with the diagonal taken as d_A^2, i.e. with the
+            // exact unit vector rather than the smoothed one that vanishes at nucleus A:
+            //   = |sum_A d_A n_A|^2 + sum_A d_A^2 (1 - n_A.n_A)
+            // one pass over the atoms instead of one over the atom pairs
+            coord_3d u{0.0,0.0,0.0};
+            double diag=0.0;
+            for (const size_t i : atoms) {
+                const Atom& atom=ncf->molecule.get_atom(i);
+                const coord_3d vr1A=xyz-atom.get_coords();
+                const double d=ncf->Sr_div_S(vr1A.normf(),atom.q);
+                const coord_3d n=ncf->smoothed_unitvec(vr1A);
+                double nn=0.0;
+                for (int axis=0; axis<3; ++axis) {
+                    u[axis]+=d*n[axis];
+                    nn+=n[axis]*n[axis];
+                }
+                diag+=d*d*(1.0-nn);
+            }
+            double uu=0.0;
+            for (int axis=0; axis<3; ++axis) uu+=u[axis]*u[axis];
+            return uu+diag;
+        }
+        std::vector<coord_3d> special_points() const override {
             return ncf->molecule.get_all_coords_vec();
         }
     };
@@ -569,17 +677,37 @@ public:
 		const NuclearCorrelationFactor* ncf;
 	public:
 		U2_functor(const NuclearCorrelationFactor* ncf) : ncf(ncf) {}
-		double operator()(const coord_3d& xyz) const {
+
+        using FunctionFunctorInterface<double,3>::operator();
+		double operator()(const coord_3d& xyz) const override {
+			return eval(xyz,ncf->all_atoms());
+		}
+		bool supports_vectorized() const override {return true;}
+		void operator()(const Vector<double*,3>& xv, double* fv, int npts) const override {
+			const std::vector<size_t> near=ncf->atoms_near(xv[0],xv[1],xv[2],npts);
+			for (int p=0; p<npts; ++p) {
+				const coord_3d xyz{xv[0][p],xv[1][p],xv[2][p]};
+				fv[p]=eval(xyz,near);
+			}
+		}
+		/// the atoms in `near` (ascending) exactly, the others through the Coulomb tail of S''/S
+		double eval(const coord_3d& xyz, const std::vector<size_t>& near) const {
 			double result=0.0;
+			size_t k=0;
 			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
 				const Atom& atom=ncf->molecule.get_atom(i);
 				const coord_3d vr1A=xyz-atom.get_coords();
 				const double r=vr1A.normf();
-				result+=ncf->Spp_div_S(r,atom.q);
+				if (k<near.size() and near[k]==i) {
+					++k;
+					result+=ncf->Spp_div_S(r,atom.q);
+				} else {
+					result-=atom.q/r;
+				}
 			}
 			return result;
 		}
-		std::vector<coord_3d> special_points() const {
+		std::vector<coord_3d> special_points() const override {
 			return ncf->molecule.get_all_coords_vec();
 		}
 	};
@@ -588,28 +716,38 @@ public:
 		const NuclearCorrelationFactor* ncf;
 	public:
 		U3_functor(const NuclearCorrelationFactor* ncf) : ncf(ncf) {}
-		double operator()(const coord_3d& xyz) const {
-			std::vector<coord_3d> all_terms(ncf->molecule.natom());
-			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
+
+		using FunctionFunctorInterface<double,3>::operator();
+		double operator()(const coord_3d& xyz) const override {
+			return eval(xyz,ncf->all_atoms());
+		}
+		bool supports_vectorized() const override {return true;}
+		void operator()(const Vector<double*,3>& xv, double* fv, int npts) const override {
+			const std::vector<size_t> near=ncf->atoms_near(xv[0],xv[1],xv[2],npts);
+			for (int p=0; p<npts; ++p) {
+				const coord_3d xyz{xv[0][p],xv[1][p],xv[2][p]};
+				fv[p]=eval(xyz,near);
+			}
+		}
+		double eval(const coord_3d& xyz, const std::vector<size_t>& atoms) const {
+			// -sum_{A>B} t_A.t_B with t_A = (S'_A/S_A) n_A, as -1/2 (|sum_A t_A|^2 - sum_A t_A.t_A):
+			// one pass over the atoms instead of one over the atom pairs
+			coord_3d sum{0.0,0.0,0.0};
+			double diag=0.0;
+			for (const size_t i : atoms) {
 				const Atom& atom=ncf->molecule.get_atom(i);
 				const coord_3d vr1A=xyz-atom.get_coords();
-				const double r=vr1A.normf();
-//				all_terms[i]=ncf->Sp(vr1A,atom.q)*(1.0/ncf->S(r,atom.q));
-				all_terms[i]=ncf->Sr_div_S(r,atom.q)*ncf->smoothed_unitvec(vr1A);
-			}
-
-			double result=0.0;
-			for (size_t i=0; i<ncf->molecule.natom(); ++i) {
-				for (size_t j=0; j<i; ++j) {
-					result+=all_terms[i][0]*all_terms[j][0]
-					       +all_terms[i][1]*all_terms[j][1]
-					       +all_terms[i][2]*all_terms[j][2];
+				const coord_3d t=ncf->Sr_div_S(vr1A.normf(),atom.q)*ncf->smoothed_unitvec(vr1A);
+				for (int axis=0; axis<3; ++axis) {
+					sum[axis]+=t[axis];
+					diag+=t[axis]*t[axis];
 				}
 			}
-
-			return -1.0*result;
+			double sum2=0.0;
+			for (int axis=0; axis<3; ++axis) sum2+=sum[axis]*sum[axis];
+			return -0.5*(sum2-diag);
 		}
-		std::vector<coord_3d> special_points() const {
+		std::vector<coord_3d> special_points() const override {
 			return ncf->molecule.get_all_coords_vec();
 		}
 	};
@@ -624,14 +762,15 @@ public:
         U2_atomic_functor(const NuclearCorrelationFactor* ncf, const size_t atom)
             : ncf(ncf), iatom(atom) {}
 
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             const Atom& atom=ncf->molecule.get_atom(iatom);
             const coord_3d vr1A=xyz-atom.get_coords();
             const double r=vr1A.normf();
             return ncf->Spp_div_S(r,atom.q);
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             std::vector< madness::Vector<double,3> > c(1);
             const Atom& atom=ncf->molecule.get_atom(iatom);
             c[0][0]=atom.x;
@@ -651,7 +790,8 @@ public:
         U3_atomic_functor(const NuclearCorrelationFactor* ncf, const int atom)
             : ncf(ncf), iatom(atom) {}
 
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             const Atom& atomA=ncf->molecule.get_atom(iatom);
             const coord_3d vr1A=xyz-atomA.get_coords();
             const double rA=vr1A.normf();
@@ -675,7 +815,7 @@ public:
             return -0.5*result;
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             std::vector< madness::Vector<double,3> > c(1);
             const Atom& atom=ncf->molecule.get_atom(iatom);
             c[0][0]=atom.x;
@@ -693,7 +833,9 @@ public:
         square_times_V_functor(const NuclearCorrelationFactor* ncf,
                 const Molecule& mol, const size_t iatom1)
             : ncf(ncf), molecule(mol), iatom(iatom1) {}
-        double operator()(const coord_3d& xyz) const {
+
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             double result=1.0;
             for (size_t i=0; i<ncf->molecule.natom(); ++i) {
                 const Atom& atom=ncf->molecule.get_atom(i);
@@ -706,7 +848,7 @@ public:
             return result*result*V;
 
         }
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             return ncf->molecule.get_all_coords_vec();
         }
     };
@@ -721,7 +863,9 @@ public:
         square_times_V_derivative_functor(const NuclearCorrelationFactor* ncf,
                 const Molecule& molecule1, const size_t atom1, const int axis1)
             : ncf(ncf), molecule(molecule1), iatom(atom1), axis(axis1) {}
-        double operator()(const coord_3d& xyz) const {
+
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             double result=1.0;
             for (size_t i=0; i<ncf->molecule.natom(); ++i) {
                 const Atom& atom=ncf->molecule.get_atom(i);
@@ -734,7 +878,7 @@ public:
             return result*result*Vprime;
 
         }
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             return ncf->molecule.get_all_coords_vec();
         }
     };
@@ -760,7 +904,8 @@ public:
             MADNESS_ASSERT((exponent==1) or (exponent==2) or (exponent==-1));
         }
 
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
 
             // compute the R term
             double result=1.0;
@@ -786,7 +931,7 @@ public:
             return result;
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             return ncf->molecule.get_all_coords_vec();
         }
 
@@ -815,7 +960,9 @@ public:
             set_length_scale(lo);
         }
 
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+
+        double operator()(const coord_3d& xyz) const override {
             const coord_3d vr1A=xyz-thisatom.get_coords();
             const double r=vr1A.normf();
             const double& Z=thisatom.q;
@@ -829,7 +976,7 @@ public:
                       -S1*(ncf->dsmoothed_unitvec(vr1A,derivativeaxis)[U1axis]);
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             std::vector< madness::Vector<double,3> > c(1);
             c[0][0]=thisatom.x;
             c[0][1]=thisatom.y;
@@ -853,7 +1000,8 @@ public:
             set_length_scale(lo);
         }
 
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             const Atom& atom=ncf->molecule.get_atom(iatom);
             const coord_3d vr1A=xyz-atom.get_coords();
             const double r=vr1A.normf();
@@ -866,7 +1014,7 @@ public:
             return drhodx*ncf->U2X_spherical(r,Z,rcut);
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             std::vector< madness::Vector<double,3> > c(1);
             const Atom& atom=ncf->molecule.get_atom(iatom);
             c[0][0]=atom.x;
@@ -897,7 +1045,8 @@ public:
         U3X_functor(const NuclearCorrelationFactor* ncf, const size_t iatom,
                 const int axis) : ncf(ncf), iatom(iatom), axis(axis) {}
 
-        double operator()(const coord_3d& xyz) const {
+        using FunctionFunctorInterface<double,3>::operator();
+        double operator()(const coord_3d& xyz) const override {
             const Atom& atomA=ncf->molecule.get_atom(iatom);
             const coord_3d vr1A=xyz-atomA.get_coords();
             const double r1A=vr1A.normf();
@@ -939,7 +1088,7 @@ public:
             return term;
         }
 
-        std::vector<coord_3d> special_points() const {
+        std::vector<coord_3d> special_points() const override {
             return ncf->molecule.get_all_coords_vec();
         }
     };
@@ -1341,7 +1490,7 @@ public:
 		}
 	}
 
-	corrfactype type() const {return NuclearCorrelationFactor::Slater;}
+	corrfactype type() const override {return NuclearCorrelationFactor::Slater;}
 
 private:
 
@@ -1352,12 +1501,18 @@ private:
 	double a_param() const {return a_;}
     double eprec_param() const {return eprec_;}
 
+    /// every per-atom term of this factor decays as exp(-a Z r); 1e-14 relative to (a Z)^2
+    double screening_radius(const double Z) const override {
+        const double a=a_param();
+        return std::log(a*Z*a*Z/((a-1.0)*1.e-14))/(a*Z);
+    }
+
 	/// first derivative of the correlation factor wrt (r-R_A)
 
 	/// \f[
 	///     Sr_div_S = \frac{1}{S(r)}\frac{\partial S(r)}{\partial r}
 	/// \f]
-	double Sr_div_S(const double& r, const double& Z) const {
+	double Sr_div_S(const double& r, const double& Z) const override {
 	    const double& a=a_param();
 	    return -a*Z/(1.0+(a-1.0)*exp(a*r*Z));
 	}
@@ -1367,7 +1522,7 @@ private:
     /// \f[
     ///     result = \frac{1}{S(r)}\frac{\partial^2 S(r)}{\partial r^2}
     /// \f]
-    double Srr_div_S(const double& r, const double& Z) const {
+    double Srr_div_S(const double& r, const double& Z) const override {
         const double& a=a_param();
         const double aZ=a*Z;
         return aZ*aZ/(1.0+(a-1.0)*exp(r*aZ));
@@ -1378,14 +1533,14 @@ private:
     /// \f[
     ///    result = \frac{1}{S(r)}\frac{\partial^3 S(r)}{\partial r^3}
     /// \f]
-    double Srrr_div_S(const double& r, const double& Z) const {
+    double Srrr_div_S(const double& r, const double& Z) const override {
         const double& a=a_param();
         const double aZ=a*Z;
         return -aZ*aZ*aZ/(1.0+(a-1.0)*exp(r*aZ));
     }
 
     /// the nuclear correlation factor
-    double S(const double& r, const double& Z) const {
+    double S(const double& r, const double& Z) const override {
     	const double a=a_param();
     	//const double eprec=eprec_param();
     	return 1.0+1.0/(a-1.0) * exp(-a*Z*r);
@@ -1396,14 +1551,14 @@ private:
     }
 
     /// radial part first derivative of the nuclear correlation factor
-    coord_3d Sp(const coord_3d& vr1A, const double& Z) const {
+    coord_3d Sp(const coord_3d& vr1A, const double& Z) const override {
     	const double a=a_param();
 		const double r=vr1A.normf();
     	return -(a*exp(-a*Z*r)*Z)/(a-1.0)*smoothed_unitvec(vr1A);
     }
 
     /// second derivative of the nuclear correlation factor
-    double Spp_div_S(const double& r, const double& Z) const {
+    double Spp_div_S(const double& r, const double& Z) const override {
     	const double a=a_param();
 
     	if (r*Z<1.e-4) {
@@ -1433,7 +1588,7 @@ private:
     ///           \left(-\frac{1}{2}\frac{S''' S - S'' S'}{S^2} + \frac{1}{\rho^2}\frac{S'}{S}
     ///           - \frac{1}{\rho} \frac{S''S - S'^2}{S^2} + \frac{Z_A}{\rho^2}\right)
     /// \f]
-    double U2X_spherical(const double& r, const double& Z, const double& rcut) const {
+    double U2X_spherical(const double& r, const double& Z, const double& rcut) const override {
         const double a=a_param();
 
         double result=0.0;
@@ -1864,7 +2019,7 @@ private:
     	} else if (rho<b) {
 
     		const double num=Z* (2 + (power<N>(-1)* a* power<N>(-1 + rho/b)
-    			    * (-2 *a*N*N + (1 + a) *N* (1 + a *(-3 + N) + N)* rho +
+    			    * (-2 *a*N*N + (1 + a) *N* (1 + a *(-3 + static_cast<int>(N)) + N)* rho +
     			      2 *(1 + a)*(1+a)* rho*rho))/power<2>(a* N - (1 + a)*rho));
 
     		const double denom=2.* (r + power<N>(-1) *a* r* power<N>(-1 + rho/b));
@@ -1898,7 +2053,7 @@ private:
 
         if (rho<b) {
             const double negn= power<N>(-1.0);
-            return (negn*power<2>(1 + a)*(-1 + N)*power<2>(Z)*power<N-2>(-1 + ((1 + a)*r*Z)/(a*N)))/
+            return (negn*power<2>(1 + a)*(-1 + static_cast<int>(N))*power<2>(Z)*power<N-2>(-1 + ((1 + a)*r*Z)/(a*N)))/
                     (a*N*(1 + negn*a*power<N>(-1 + ((1 + a)*r*Z)/(a*N))));
         } else {
             return 0.0;
@@ -1912,7 +2067,7 @@ private:
 
         if (rho<b) {
             const double negn= power<N>(-1.0);
-            return (negn*power<3>(1 + a)*(-2 + N)*(-1 + N)*power<3>(Z)*power<N-3>(-1 + ((1 + a)*r*Z)/(a*N)))/
+            return (negn*power<3>(1 + a)*(-2 + static_cast<int>(N))*(-1 + static_cast<int>(N))*power<3>(Z)*power<N-3>(-1 + ((1 + a)*r*Z)/(a*N)))/
                     (power<2>(a*N)*(1 + negn*a*power<N>(-1 + ((1 + a)*r*Z)/(a*N))));
         } else {
             return 0.0;
@@ -1931,10 +2086,10 @@ private:
             const double rn=sqrt(N-1);
             const double r0=0.0;
             const double r1=((2.*(-8. + 9.*rn) + N*(25. + 10.*rn + N))*r*power<4>(Z))/
-                    (6.*power<2>(-2 + N)*rn);
+                    (6.*power<2>(-2 + static_cast<int>(N))*rn);
             const double r2=((-4*(17 + 9*rn) + N*(92 + 80*rn +
                     N*(-29 - 33*rn + N*(4 + 7*rn + N))))*power<5>(Z))/
-                            (8.*power<3>(-2 + N)*(-1 + N)*rn);
+                            (8.*power<3>(-2 + static_cast<int>(N))*(-1 + static_cast<int>(N))*rn);
             result=(r0 + r*r1 + r*r*r2);
 
         } else {
