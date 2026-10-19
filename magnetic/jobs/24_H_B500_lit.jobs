@@ -1,0 +1,8 @@
+# H atom, B = 500 B0: literature comparison, step 1 (settings of file 05).
+# Exact (Kravchenko, Liberman, Johansson, PRA 54, 287 (1996), Table I; B = 1, 10, 100, 1000 as quoted in Ry in
+# arXiv:0711.2553, Table I):  binding B/2 - E =  B=1: 0.831168896733   B=10: 1.747797165   B=100: 3.789804236305
+#   B=500: 6.257087674681   B=1000: 7.662423245 Ha.  The log prints E - ref with ref = B/2 - binding.
+# Written by hand (step 1 of the H-atom literature series: one job per field); step 2 adds a qextra series.
+# Summary: bash summarize.sh results/24_H_B500_lit 6.257087674681
+COMMON B=500 E0=243.7 L=6 rcut=0.6 rtaper=0.06 k=10 thresh=1e-7 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 ref=243.742912325319
+qextra100  qextra=100

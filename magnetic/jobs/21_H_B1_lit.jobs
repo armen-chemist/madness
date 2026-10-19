@@ -1,0 +1,8 @@
+# H atom, B = 1 B0: literature comparison, step 1. Weak field: qmax is set by qextra (settings of file 06).
+# Exact (Kravchenko, Liberman, Johansson, PRA 54, 287 (1996), Table I; B = 1, 10, 100, 1000 as quoted in Ry in
+# arXiv:0711.2553, Table I):  binding B/2 - E =  B=1: 0.831168896733   B=10: 1.747797165   B=100: 3.789804236305
+#   B=500: 6.257087674681   B=1000: 7.662423245 Ha.  The log prints E - ref with ref = B/2 - binding.
+# Written by hand (step 1 of the H-atom literature series: one job per field); step 2 adds a qextra series.
+# Summary: bash summarize.sh results/21_H_B1_lit 0.831168896733
+COMMON B=1 E0=-0.3 axial=0 k=9 thresh=1e-6 eprec=1e-8 L=20 maxiter=30 tol=1e-7 ref=-0.331168896733
+qextra20  qextra=20

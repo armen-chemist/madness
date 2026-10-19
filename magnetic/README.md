@@ -13,7 +13,15 @@ operator (p + A)^2/2 is applied exactly, by a Fourier separation in y, a mask-co
 | `magnetic/` | this folder: build script, job files, run and summary scripts |
 | `magnetic/docs/parameters_physics.pdf` | meaning of every parameter |
 
-The changes against upstream: `git diff 37fa368cd magnetic-fourier -- src`.
+The changes against upstream MADNESS (once: `git remote add upstream https://github.com/m-a-d-n-e-s-s/madness.git`):
+
+```
+git fetch upstream
+git diff upstream/master...magnetic-fourier -- src
+```
+
+To bring in the latest MADNESS: `git fetch upstream && git merge upstream/master` on `magnetic-fourier`,
+then rebuild (section 2) and push (`git push origin magnetic-fourier`).
 
 
 ## 1. Get the code

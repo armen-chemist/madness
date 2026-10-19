@@ -1,0 +1,9 @@
+# H2 spin triplet, bond at theta = 90 deg to B, B = 425.5 B0: fast route instead of the full R scan of file 12.
+# Written by hand (not by tools/make_jobs.py). Settings identical to file 12.
+# 1. ropt_R0.26_mol: bond-length optimization with Hellmann-Feynman forces, mol start (the lower state at
+#    R = 0.2 in file 12). Ends with |dE/dR| < gtol (minimum found) or "geo: STOP" (no minimum up to R = 0.6).
+# 2. H_atom_rcut1.0: the separated-atom zero, same job as in file 10. D = 2 E_phys(H) - E_phys(H2), D > 0: bound.
+# Then (by hand): one atm-start check and one or two scan points near the optimized R.
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=30
+ropt_R0.26_mol  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,-0.13,0,0;1,0.13,0,0"
+H_atom_rcut1.0  nelec=1 E0=207 tol=1e-7 maxiter=20

@@ -1,0 +1,9 @@
+# H atom, B = 10 B0: literature comparison, step 1. rcut = sqrt(180/B) (the rule behind rcut 1.34 at B = 100
+# and 0.6 at B = 500: the Landau factor exp(-B rho^2/4) is e^-45 at rcut), rtaper = rcut/10.
+# Exact (Kravchenko, Liberman, Johansson, PRA 54, 287 (1996), Table I; B = 1, 10, 100, 1000 as quoted in Ry in
+# arXiv:0711.2553, Table I):  binding B/2 - E =  B=1: 0.831168896733   B=10: 1.747797165   B=100: 3.789804236305
+#   B=500: 6.257087674681   B=1000: 7.662423245 Ha.  The log prints E - ref with ref = B/2 - binding.
+# Written by hand (step 1 of the H-atom literature series: one job per field); step 2 adds a qextra series.
+# Summary: bash summarize.sh results/22_H_B10_lit 1.747797165
+COMMON B=10 E0=3.5 L=10 rcut=4.24 rtaper=0.424 k=10 thresh=1e-7 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 ref=3.252202835
+qextra40  qextra=40

@@ -16,6 +16,14 @@ MAGNETICATOM=${MAGNETICATOM:-$(cd "$(dirname "$0")/.." && pwd)/build/src/madness
 MINMEM_GB=${MINMEM_GB:-3}      # kill a job when free memory drops below this (GB)
 export OMP_NUM_THREADS=1
 # MADNESS threads: default = all cores. Set e.g. MAD_NUM_THREADS=24 to leave cores free.
+# CORES=0-11 (taskset list): run every job of this queue on these cores only, MAD_NUM_THREADS = their number.
+# Keep each queue inside one NUMA node (lscpu: node0 0-23, node1 24-47): 4 queues x 12 cores were fastest.
+PIN=""
+if [ -n "$CORES" ]; then
+    PIN="taskset -c $CORES"
+    NC=$(env -u OMP_NUM_THREADS taskset -c "$CORES" nproc) || { echo "bad CORES=$CORES"; exit 1; }   # nproc obeys OMP_NUM_THREADS
+    export MAD_NUM_THREADS=${MAD_NUM_THREADS:-$NC}
+fi
 
 JOBS=$(readlink -f "$1")
 [ -f "$JOBS" ] || { echo "usage: bash run_queue.sh <jobfile>"; exit 1; }
@@ -31,8 +39,8 @@ grep -v -e '^#' -e '^COMMON' -e '^[[:space:]]*$' "$JOBS" | while read -r NAME AR
     if [ -f "$LOG" ] && grep -q "^# JOB FINISHED" "$LOG"; then echo "skip $NAME (finished)"; continue; fi
     echo "$(date '+%F %T')  start $NAME"
     echo "# $MAGNETICATOM $COMMON $ARGS" > "$LOG"
-    echo "# started $(date '+%F %T') on $(hostname), MAD_NUM_THREADS=${MAD_NUM_THREADS:-all}" >> "$LOG"
-    eval stdbuf -oL "$MAGNETICATOM" $COMMON $ARGS >> "$LOG" 2>&1 &
+    echo "# started $(date '+%F %T') on $(hostname), MAD_NUM_THREADS=${MAD_NUM_THREADS:-all}, cores ${CORES:-all}" >> "$LOG"
+    eval $PIN stdbuf -oL "$MAGNETICATOM" $COMMON $ARGS >> "$LOG" 2>&1 &
     PID=$!
     while kill -0 $PID 2>/dev/null; do
         AV=$(awk '/MemAvailable/{print int($2/1048576)}' /proc/meminfo)
