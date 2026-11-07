@@ -1,0 +1,4 @@
+# one calculation of jobs/26_conv_H2_B425.jobs, made by tools/split_jobs.sh
+RESULTS 26_conv_H2_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 rcut=0.75 rtaper=0.075
+H2_rtaper0.2  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" rtaper=0.2

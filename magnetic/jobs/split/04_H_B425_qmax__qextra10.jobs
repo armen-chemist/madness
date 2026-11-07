@@ -1,0 +1,4 @@
+# one calculation of jobs/04_H_B425_qmax.jobs, made by tools/split_jobs.sh
+RESULTS 04_H_B425_qmax
+COMMON B=425.5 E0=207 thresh=1e-7 L=4 rcut=0.65 rtaper=0.065 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+qextra10   qextra=10

@@ -1,0 +1,4 @@
+# one calculation of jobs/26_conv_H2_B425.jobs, made by tools/split_jobs.sh
+RESULTS 26_conv_H2_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 rcut=0.75 rtaper=0.075
+H_th1e-7      nelec=1 E0=207 tol=1e-7 maxiter=30 thresh=1e-7

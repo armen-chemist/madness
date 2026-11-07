@@ -1,0 +1,4 @@
+# one calculation of jobs/03_H_B425_rcut_L_thresh7.jobs, made by tools/split_jobs.sh
+RESULTS 03_H_B425_rcut_L_thresh7
+COMMON B=425.5 E0=207 thresh=1e-7 qextra=10 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+rcut1.2_L12  rcut=1.2 rtaper=0.12 L=12

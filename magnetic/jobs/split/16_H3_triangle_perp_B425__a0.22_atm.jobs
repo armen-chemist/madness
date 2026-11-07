@@ -1,0 +1,4 @@
+# one calculation of jobs/16_H3_triangle_perp_B425.jobs, made by tools/split_jobs.sh
+RESULTS 16_H3_triangle_perp_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+a0.22_atm       nelec=3 state=highspin axial=0 mloc=0 E0=207 "atoms=1,0.127017,0,0;1,-0.063509,0.11,0;1,-0.063509,-0.11,0"

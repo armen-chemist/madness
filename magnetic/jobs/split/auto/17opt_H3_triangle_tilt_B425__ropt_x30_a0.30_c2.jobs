@@ -1,0 +1,6 @@
+# continuation of jobs/split/auto/17opt_H3_triangle_tilt_B425__ropt_x30_a0.30_c1.jobs, written by tools/continue_opt.sh 2026-10-25 07:45:01 after the off-axis guard stopped it:
+# rcut widened to 1.34 (rtaper 0.134); first step = rcut check at the last R
+# start R 0.490000 = last "geo: new R" of results/17opt_H3_triangle_tilt_B425/ropt_x30_a0.30_c1.log; maxgeo 4 = 6 - 2 steps done
+RESULTS 17opt_H3_triangle_tilt_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.34 rtaper=0.134 maxscf=40
+ropt_x30_a0.30_c2 nelec=3 state=highspin axial=0 mloc=0 E0=207 ropt=1 maxgeo=4 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.282901,0.000000,0.000000;1,-0.141451,0.212176,0.122500;1,-0.141451,-0.212176,-0.122500"

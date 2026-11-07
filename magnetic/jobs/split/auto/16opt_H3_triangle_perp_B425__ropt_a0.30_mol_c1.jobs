@@ -1,0 +1,5 @@
+# continuation of jobs/split/16opt_H3_triangle_perp_B425__ropt_a0.30_mol.jobs, written by tools/continue_opt.sh 2026-10-23 01:15:02 after it ended unfinished:
+# start R 0.420000 = last "geo: new R" of results/16opt_H3_triangle_perp_B425/ropt_a0.30_mol.log; maxgeo 7 = 10 - 3 steps done
+RESULTS 16opt_H3_triangle_perp_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+ropt_a0.30_mol_c1 nelec=3 state=highspin axial=1 mlist=0,-1,-2 E0list=203,207,209 ropt=1 maxgeo=7 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,0.242487,0.000000,0.000000;1,-0.121244,0.210000,0.000000;1,-0.121244,-0.210000,0.000000"

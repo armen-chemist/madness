@@ -1,0 +1,4 @@
+# one calculation of jobs/06_H_B1_qmax.jobs, made by tools/split_jobs.sh
+RESULTS 06_H_B1_qmax
+COMMON B=1 E0=-0.3 axial=0 k=9 thresh=1e-6 eprec=1e-8 L=20 maxiter=30 tol=1e-7 ref=-0.331168896733
+qextra40  qextra=40

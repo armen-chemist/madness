@@ -1,0 +1,4 @@
+# one calculation of jobs/27_H2plus_tilted_check.jobs, made by tools/split_jobs.sh
+RESULTS 27_H2plus_tilted_check
+COMMON k=10 thresh=1e-7 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+B10_q40   B=10  E0=2.2  L=10 rcut=4.64 rtaper=0.464 qextra=40  ref=2.0587876649 "atoms=1,-0.4,0,-0.3;1,0.4,0,0.3"

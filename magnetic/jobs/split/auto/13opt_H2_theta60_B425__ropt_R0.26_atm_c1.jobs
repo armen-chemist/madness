@@ -1,0 +1,5 @@
+# continuation of jobs/split/13opt_H2_theta60_B425__ropt_R0.26_atm.jobs, written by tools/continue_opt.sh 2026-10-29 15:25:01 after it ended unfinished:
+# start R 0.589993 = last "geo: new R" of results/13opt_H2_theta60_B425/ropt_R0.26_atm.log; maxgeo 2 = 10 - 8 steps done
+RESULTS 13opt_H2_theta60_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=30
+ropt_R0.26_atm_c1 nelec=2 state=triplet axial=0 mloc=0 E0=207 ropt=1 maxgeo=2 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=1,-0.255474,0.000000,-0.147499;1,0.255474,0.000000,0.147499"

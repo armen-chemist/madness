@@ -1,0 +1,4 @@
+# one calculation of jobs/05_H_B500_qmax.jobs, made by tools/split_jobs.sh
+RESULTS 05_H_B500_qmax
+COMMON B=500 E0=243.7 thresh=1e-7 L=6 rcut=0.6 rtaper=0.06 k=10 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 ref=243.742912325319
+qextra100  qextra=100

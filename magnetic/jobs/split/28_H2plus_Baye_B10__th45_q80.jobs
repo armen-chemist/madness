@@ -1,0 +1,4 @@
+# one calculation of jobs/28_H2plus_Baye_B10.jobs, made by tools/split_jobs.sh
+RESULTS 28_H2plus_Baye_B10
+COMMON k=10 thresh=1e-7 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+th45_q80   B=10 E0=2.10 L=10 rcut=4.58 rtaper=0.458 qextra=80  ref=1.9610283639 "atoms=1,-0.338704,0,-0.338704;1,0.338704,0,0.338704"

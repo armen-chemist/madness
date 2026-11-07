@@ -1,0 +1,4 @@
+# one calculation of jobs/12_H2_theta90_B425.jobs, made by tools/split_jobs.sh
+RESULTS 12_H2_theta90_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=30
+R0.6_mol        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 "atoms=1,-0.3,0,0;1,0.3,0,0"

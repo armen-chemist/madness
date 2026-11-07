@@ -1,0 +1,4 @@
+# one calculation of jobs/20_He2_angles_B425.jobs, made by tools/split_jobs.sh
+RESULTS 20_He2_angles_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+th90_R0.4_mol        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 "atoms=2,-0.2,0,0;2,0.2,0,0"

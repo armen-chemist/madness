@@ -1,0 +1,4 @@
+# He atom (Z = 2) reference, 2026-10-21: the He_atom_* lines of jobs/10_atoms_B425.jobs had no atoms= and ran Z = 1 (H-)
+RESULTS 10_atoms_B425
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5
+HeZ2_atom_rcut0.75  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=198 E0b=206 maxscf=30 rcut=0.75 rtaper=0.075 "atoms=2,0,0,0"
