@@ -7,6 +7,8 @@
 # Job file format:
 #   COMMON <arguments used by every job of the file>
 #   <name> <arguments of this job>        (later arguments override COMMON ones)
+#   RESULTS <folder>                      (optional: one-calculation file made by tools/split_jobs.sh;
+#                                          the log goes to results/<folder>/, which DONE then covers as a whole)
 #   # comment lines and empty lines are ignored
 # Output: results/<jobfile name>/<name>.log, and DONE in that folder when all jobs are finished.
 # A job that ended normally gets the line "# JOB FINISHED" at the end of its log. Those jobs are skipped
@@ -14,6 +16,8 @@
 
 MAGNETICATOM=${MAGNETICATOM:-$(cd "$(dirname "$0")/.." && pwd)/build/src/madness/chem/magneticatom}
 MINMEM_GB=${MINMEM_GB:-3}      # kill a job when free memory drops below this (GB)
+STOP_AFTER_H=${STOP_AFTER_H:-} # start no new job after this many hours (the rest is left for a resubmission)
+T0=$(date +%s)
 export OMP_NUM_THREADS=1
 # MADNESS threads: default = all cores. Set e.g. MAD_NUM_THREADS=24 to leave cores free.
 # CORES=0-11 (taskset list): run every job of this queue on these cores only, MAD_NUM_THREADS = their number.
@@ -29,15 +33,21 @@ JOBS=$(readlink -f "$1")
 [ -f "$JOBS" ] || { echo "usage: bash run_queue.sh <jobfile>"; exit 1; }
 [ -x "$MAGNETICATOM" ] || { echo "program not found: $MAGNETICATOM (set MAGNETICATOM=...)"; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT="$HERE/results/$(basename "$JOBS" .jobs)"
+RESULTS=$(awk '$1=="RESULTS"{print $2}' "$JOBS")
+OUT="$HERE/results/${RESULTS:-$(basename "$JOBS" .jobs)}"
 mkdir -p "$OUT" && cd "$OUT"
-rm -f DONE
+[ -z "$RESULTS" ] && rm -f DONE
 COMMON=$(awk '$1=="COMMON"{$1=""; print}' "$JOBS")
 
-grep -v -e '^#' -e '^COMMON' -e '^[[:space:]]*$' "$JOBS" | while read -r NAME ARGS; do
+grep -v -e '^#' -e '^COMMON' -e '^RESULTS' -e '^AFTER' -e '^RESTART' -e '^[[:space:]]*$' "$JOBS" | while read -r NAME ARGS; do
     LOG="$NAME.log"
     if [ -f "$LOG" ] && grep -q "^# JOB FINISHED" "$LOG"; then echo "skip $NAME (finished)"; continue; fi
+    if [ -n "$STOP_AFTER_H" ] && [ $(( $(date +%s) - T0 )) -ge $(( STOP_AFTER_H * 3600 )) ]; then
+        echo "$(date '+%F %T')  stop: $STOP_AFTER_H h reached, $NAME and later jobs are left for the next submission"; exit 3
+    fi
     echo "$(date '+%F %T')  start $NAME"
+    # an unfinished log of an earlier attempt is kept (renamed), never overwritten
+    [ -f "$LOG" ] && mv "$LOG" "$LOG.unfinished_$(date +%m%d_%H%M)"
     echo "# $MAGNETICATOM $COMMON $ARGS" > "$LOG"
     echo "# started $(date '+%F %T') on $(hostname), MAD_NUM_THREADS=${MAD_NUM_THREADS:-all}, cores ${CORES:-all}" >> "$LOG"
     eval $PIN stdbuf -oL "$MAGNETICATOM" $COMMON $ARGS >> "$LOG" 2>&1 &
@@ -52,4 +62,11 @@ grep -v -e '^#' -e '^COMMON' -e '^[[:space:]]*$' "$JOBS" | while read -r NAME AR
     else STATUS="NOT finished (exit code $RC)"; fi
     echo "$(date '+%F %T')  end   $NAME  $STATUS  $(grep -E '^final|KILLED' "$LOG" | tail -1)"
 done
+[ "${PIPESTATUS[1]}" = 3 ] && exit 0     # stopped by STOP_AFTER_H: not DONE
+if [ -n "$RESULTS" ]; then
+    # one-calculation file: the folder is DONE when every calculation of the parent file has finished
+    for N in $(grep -v -e '^#' -e '^COMMON' -e '^[[:space:]]*$' "$HERE/jobs/$RESULTS.jobs" | awk '{print $1}'); do
+        grep -q "^# JOB FINISHED" "$N.log" 2>/dev/null || exit 0
+    done
+fi
 date > DONE

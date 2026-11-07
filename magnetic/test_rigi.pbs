@@ -1,0 +1,22 @@
+#!/bin/bash
+# Check that the build runs on the rigi Torque nodes: same test as install.sh and slurm/test_bra08.sbatch.
+# Usage (on rigi):   cd ~/madness/magnetic && qsub test_rigi.pbs
+#   Pinned to node24 (28 cores), which is idle in both Torque and bra08's Slurm. Other node: qsub -l nodes=node25:ppn=28 test_rigi.pbs
+#   Do not use node01-05 / node07-18: Torque lists them free, but Slurm on bra08 runs other users' jobs there.
+#PBS -N mad-test
+#PBS -l nodes=node24:ppn=28
+#PBS -l walltime=00:30:00
+#PBS -j oe
+#PBS -o test_rigi.out
+
+source "$HOME/miniforge3/etc/profile.d/conda.sh" && conda activate madness
+echo "host $(hostname), $(nproc) cores, $(date '+%F %T')"
+export OMP_NUM_THREADS=1 MAD_NUM_THREADS=26
+EXE=$HOME/madness/build/src/madness/chem/magneticatom
+D=$HOME/madness/magnetic/results/test_rigi && mkdir -p "$D" && cd "$D"
+/usr/bin/time -v "$EXE" B=100 E0=48.1 k=8 thresh=1e-5 L=6 rcut=1.34 rtaper=0.134 maxiter=2 > test.log 2> time.log || true
+E1=$(awk '$1=="iter" && $2=="1" {print $5}' test.log)
+echo "iteration 1: E = $E1   (expected: 46.230390629)"
+awk -v e="$E1" 'BEGIN{exit !(e != "" && (e-46.230390629)^2 < 1e-10)}' && echo PASSED || echo FAILED
+grep -E "Elapsed|Maximum resident" time.log
+echo "end $(date '+%F %T')"

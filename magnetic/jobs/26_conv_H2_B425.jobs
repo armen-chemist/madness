@@ -1,0 +1,36 @@
+# Numerical convergence of the molecule (paper table tab-conv-mol): triplet H2, bond parallel to B, at the
+# optimized R_e = 0.236753 bohr of 11opt (ropt_R0.24.log, geo 3), single points (no ropt). Base = the production
+# settings of 11/11opt (rcut 0.75); each other line changes ONE setting, the same for H2 and the H atom, so both E(H2)
+# and D = 2E(H) - E(H2) can be followed. tolscf/tol tightened to 1e-7 so the SCF error stays below the effects.
+# Written by hand 2026-10-22 (user request).
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 rcut=0.75 rtaper=0.075
+H2_base       nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376"
+H2_k8         nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" k=8
+H2_k12        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" k=12
+H2_th1e-5     nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" thresh=1e-5
+H2_th1e-7     nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" thresh=1e-7
+H2_L6         nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" L=6
+H2_L12        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" L=12
+H2_q20        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" qextra=20
+H2_q40        nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" qextra=40
+H2_rcut1.0    nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" rcut=1.0 rtaper=0.1
+H2_rcut1.34   nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" rcut=1.34 rtaper=0.134
+H2_rtaper0.2  nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" rtaper=0.2
+H2_dphi1.5    nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" dphi=1.5
+H2_h0.125     nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" h=0.125
+H2_tmax90     nelec=2 state=triplet axial=1 ma=0 mb=-1 E0=203.5 E0b=207.7 tolscf=1e-7 maxscf=40 "atoms=1,0,0,-0.118376;1,0,0,0.118376" tmax_factor=90
+H_base        nelec=1 E0=207 tol=1e-7 maxiter=30
+H_k8          nelec=1 E0=207 tol=1e-7 maxiter=30 k=8
+H_k12         nelec=1 E0=207 tol=1e-7 maxiter=30 k=12
+H_th1e-5      nelec=1 E0=207 tol=1e-7 maxiter=30 thresh=1e-5
+H_th1e-7      nelec=1 E0=207 tol=1e-7 maxiter=30 thresh=1e-7
+H_L6          nelec=1 E0=207 tol=1e-7 maxiter=30 L=6
+H_L12         nelec=1 E0=207 tol=1e-7 maxiter=30 L=12
+H_q20         nelec=1 E0=207 tol=1e-7 maxiter=30 qextra=20
+H_q40         nelec=1 E0=207 tol=1e-7 maxiter=30 qextra=40
+H_rcut1.0     nelec=1 E0=207 tol=1e-7 maxiter=30 rcut=1.0 rtaper=0.1
+H_rcut1.34    nelec=1 E0=207 tol=1e-7 maxiter=30 rcut=1.34 rtaper=0.134
+H_rtaper0.2   nelec=1 E0=207 tol=1e-7 maxiter=30 rtaper=0.2
+H_dphi1.5     nelec=1 E0=207 tol=1e-7 maxiter=30 dphi=1.5
+H_h0.125      nelec=1 E0=207 tol=1e-7 maxiter=30 h=0.125
+H_tmax90      nelec=1 E0=207 tol=1e-7 maxiter=30 tmax_factor=90

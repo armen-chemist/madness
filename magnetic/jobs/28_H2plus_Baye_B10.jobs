@@ -1,0 +1,18 @@
+# Tilted H2+ (one electron) at the geometries of Baye, Joos de ter Beerst and Sparenberg, J. Phys. B 42, 225102 (2009)
+# (Lagrange-mesh, independent reference, about 1e-7 Ha): B = 10, R = 0.958, theta = 0, 45, 90 deg, bond in the x-z plane,
+# gauge origin at the bond midpoint. Values as quoted in docs/florian/greens_function_general_molecules.md:362
+# = Tables 1-2 of the paper (docs/florian/literature/baye2009.pdf, checked 2026-10-24; E includes 1/R and gamma/2,
+# no spin term, alpha = angle bond-B); Florian minus Baye there: -4.0e-9, -2.4e-7, +7.2e-8.
+#   theta  0: E_T = 2.825014661 -> electronic E = E_T - 1/R = 1.7811733249
+#   theta 45: E_T = 3.0048697   -> 1.9610283639
+#   theta 90: E_T = 3.1425858   -> 2.0987444639
+# Compare our "total E" with E_T; the log's "E - ref" is electronic. Settings as in jobs/27_H2plus_tilted_check.jobs:
+# rcut = (transverse distance of the nuclei) + sqrt(180/B), rtaper = rcut/10; qextra 80 and 160.
+# Written by hand, 2026-10-24 (user: "can we also run against Baye data and see what is happening?").
+COMMON k=10 thresh=1e-7 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+th0_q80    B=10 E0=1.92 L=10 rcut=4.24 rtaper=0.424 qextra=80  ref=1.7811733249 "atoms=1,0,0,-0.479;1,0,0,0.479"
+th45_q80   B=10 E0=2.10 L=10 rcut=4.58 rtaper=0.458 qextra=80  ref=1.9610283639 "atoms=1,-0.338704,0,-0.338704;1,0.338704,0,0.338704"
+th90_q80   B=10 E0=2.24 L=10 rcut=4.72 rtaper=0.472 qextra=80  ref=2.0987444639 "atoms=1,-0.479,0,0;1,0.479,0,0"
+th0_q160   B=10 E0=1.92 L=10 rcut=4.24 rtaper=0.424 qextra=160 ref=1.7811733249 "atoms=1,0,0,-0.479;1,0,0,0.479"
+th45_q160  B=10 E0=2.10 L=10 rcut=4.58 rtaper=0.458 qextra=160 ref=1.9610283639 "atoms=1,-0.338704,0,-0.338704;1,0.338704,0,0.338704"
+th90_q160  B=10 E0=2.24 L=10 rcut=4.72 rtaper=0.472 qextra=160 ref=2.0987444639 "atoms=1,-0.479,0,0;1,0.479,0,0"

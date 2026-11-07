@@ -1,0 +1,17 @@
+# Tilted H2+ (one electron), theta = 53.13 deg between bond and B, bond in the x-z plane, gauge origin at the
+# bond midpoint: check of our Fourier Green's function off the field axis against Florian's references
+# (docs/florian/tilted_h2plus_tight_thresh.md; uniform-grid FT route, h-extrapolated):
+#   B = 10,  R = 1.0, nuclei +-(0.4, 0, 0.3):    E_T = 3.0587876649  (+-2e-8)  -> electronic E = E_T - 1/R = 2.0587876649
+#   B = 100, R = 0.3, nuclei +-(0.12, 0, 0.09):  E_T = 46.0089080187 (-3.3e-8/+6e-11) -> E = 42.6755746854
+# E_T includes the Landau zero point B/2 (no spin): compare our "total E" line; the log's "E - ref" is electronic.
+# rcut = (transverse distance of the nuclei) + sqrt(180/B) (rule of files 22/23), rtaper = rcut/10;
+# k, thresh, L as in the H-atom literature files 22 (B = 10) and 23 (B = 100); two qextra each
+# (B10_q160 and B100_q320 added 2026-10-23, user request: third point for the qextra extrapolation, error ~ 1/qextra^2?).
+# Written by hand, 2026-10-22 (user: "to be sure that we are on the right path").
+COMMON k=10 thresh=1e-7 eprec=1e-9 tol=1e-7 maxiter=20 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3
+B10_q40   B=10  E0=2.2  L=10 rcut=4.64 rtaper=0.464 qextra=40  ref=2.0587876649 "atoms=1,-0.4,0,-0.3;1,0.4,0,0.3"
+B10_q80   B=10  E0=2.2  L=10 rcut=4.64 rtaper=0.464 qextra=80  ref=2.0587876649 "atoms=1,-0.4,0,-0.3;1,0.4,0,0.3"
+B100_q80  B=100 E0=42.8 L=8  rcut=1.46 rtaper=0.146 qextra=80  ref=42.6755746854 "atoms=1,-0.12,0,-0.09;1,0.12,0,0.09"
+B100_q160 B=100 E0=42.8 L=8  rcut=1.46 rtaper=0.146 qextra=160 ref=42.6755746854 "atoms=1,-0.12,0,-0.09;1,0.12,0,0.09"
+B10_q160  B=10  E0=2.2  L=10 rcut=4.64 rtaper=0.464 qextra=160 ref=2.0587876649 "atoms=1,-0.4,0,-0.3;1,0.4,0,0.3"
+B100_q320 B=100 E0=42.8 L=8  rcut=1.46 rtaper=0.146 qextra=320 ref=42.6755746854 "atoms=1,-0.12,0,-0.09;1,0.12,0,0.09"

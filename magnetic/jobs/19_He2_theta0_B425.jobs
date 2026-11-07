@@ -19,4 +19,4 @@ R0.9        nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207
 R0.3_atm    nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,0,0,-0.15;2,0,0,0.15"
 R0.45_atm   nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,0,0,-0.225;2,0,0,0.225"
 R0.7_atm    nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 "atoms=2,0,0,-0.35;2,0,0,0.35"
-ropt_R0.26  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,0,0,-0.13;2,0,0,0.13"
+# moved to 19opt_He2_theta0_B425.jobs:  ropt_R0.26  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,0,0,-0.13;2,0,0,0.13"

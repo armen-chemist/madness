@@ -1,0 +1,8 @@
+# Structure optimization only: the ropt_* jobs of 20_He2_angles_B425.jobs, same settings, on their own node,
+# so the optimized geometries come without waiting for the R scan (the scan is the independent check).
+# Written by hand (not by tools/make_jobs.py).
+COMMON B=425.5 k=10 thresh=1e-6 eprec=1e-9 L=8 qextra=10 h=0.25 tmin=1e-8 tmax_factor=45 dphi=3 inner=3 tolscf=1e-5 rcut=1.0 rtaper=0.1 maxscf=40
+ropt_th90_R0.40_mol  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.2,0,0;2,0.2,0,0"
+ropt_th90_R0.40_atm  nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.2,0,0;2,0.2,0,0"
+ropt_th45_R0.40_mol  nelec=4 state=highspin axial=1 mlist=0,-1,-2,-3 E0list=201,205.5,207.5,209 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.141421,0,-0.141421;2,0.141421,0,0.141421"
+ropt_th45_R0.40_atm  nelec=4 state=highspin axial=0 mloc=0,-1 E0list=202,207,202,207 ropt=1 maxgeo=10 gtol=2e-3 rtol=1e-4 dr0=0.02 maxstep=0.05 "atoms=2,-0.141421,0,-0.141421;2,0.141421,0,0.141421"

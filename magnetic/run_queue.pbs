@@ -1,0 +1,23 @@
+#!/bin/bash
+# Run one job file through Torque on one whole node (16 cores). Normally started by submit_next.sh.
+#
+# By hand (on hawaii):   cd ~/madness/magnetic
+#   qsub -N q11 -l walltime=48:00:00 -v JOBFILE=jobs/11_H2_theta0_B425.jobs,STOP_AFTER_H=12 run_queue.pbs
+#     STOP_AFTER_H: start no new calculation after this many hours, so the node goes back to the queue
+#     regularly; submit again to continue (finished calculations are skipped).
+#   Job array form: qsub -t 0-4%2 -v LIST=batches/x.list run_queue.pbs   (element i runs line i+1 of LIST)
+# Progress: queue_<jobfile>.out here and results/<jobfile>/. Stop: qdel <jobid>
+#PBS -l nodes=16
+#PBS -j oe
+#PBS -o results/pbs/
+
+cd "$PBS_O_WORKDIR"
+[ -n "$JOBFILE" ] || JOBFILE=$(sed -n "$((PBS_ARRAYID + 1))p" "$LIST")
+[ -n "$JOBFILE" ] || { echo "no JOBFILE (or no line $((PBS_ARRAYID + 1)) in $LIST)"; exit 1; }
+export MAD_NUM_THREADS=24      # whole node is ours (16 cores, 32 hw threads); 24 and 32 were 4% faster than 16 (results/threadtest)
+export STOP_AFTER_H
+echo "host $(hostname), job $PBS_JOBID, $JOBFILE, $(date '+%F %T')"
+Q=queue_$(basename "$JOBFILE" .jobs).out
+case "$JOBFILE" in jobs/split/*) mkdir -p batches/queue_split; Q=batches/queue_split/$Q ;; esac
+bash run_queue.sh "$JOBFILE" >> "$Q" 2>&1
+echo "end $(date '+%F %T')"
