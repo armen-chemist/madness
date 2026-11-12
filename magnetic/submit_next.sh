@@ -70,7 +70,7 @@ grep -v -e '^#' -e '^[[:space:]]*$' batches/order.list | while read -r JOBFILE W
             if [ -f "$OUT/JOBID" ]; then running "$OUT/JOBID" && continue
             else [ -n "$(find "$CLOG" -mmin -240)" ] && continue; fi
         fi
-        if [ -f "$CLOG" ] && grep -q 'ropt=1' "$CUR"; then
+        if [ -f "$CLOG" ] && grep -qE 'ropt=[12]' "$CUR"; then
             # the optimization ended unfinished (walltime) or at the off-axis guard (WIDE): continue it from its last R
             NEXT=jobs/split/auto/${BASE}_c$((K+1)).jobs
             STEPS=$(grep -c "^geo " "$CLOG")   # steps of the last member only: its maxgeo already excludes the earlier ones

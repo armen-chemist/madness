@@ -16,6 +16,8 @@ cd "$PBS_O_WORKDIR"
 [ -n "$JOBFILE" ] || { echo "no JOBFILE (or no line $((PBS_ARRAYID + 1)) in $LIST)"; exit 1; }
 export MAD_NUM_THREADS=24      # whole node is ours (16 cores, 32 hw threads); 24 and 32 were 4% faster than 16 (results/threadtest)
 export STOP_AFTER_H
+# optional "# PROGRAM <path>" line in the job file: run that binary instead of the default (e.g. a test build)
+P=$(awk '$1=="#" && $2=="PROGRAM"{print $3; exit}' "$JOBFILE"); [ -n "$P" ] && export MAGNETICATOM=$P
 echo "host $(hostname), job $PBS_JOBID, $JOBFILE, $(date '+%F %T')"
 Q=queue_$(basename "$JOBFILE" .jobs).out
 case "$JOBFILE" in jobs/split/*) mkdir -p batches/queue_split; Q=batches/queue_split/$Q ;; esac

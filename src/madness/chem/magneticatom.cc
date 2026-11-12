@@ -16,6 +16,9 @@
 ///   orbitals from mlist=m1,..,mN (axial=1, E0list=e1,..,eN), mloc=m1,..,mk (axial=0: k orbitals with
 ///   Lz = m_j about every nucleus), or one 1s per nucleus (axial=0, N nuclei);
 ///   ropt=1: bond-length (breathing) optimization with Hellmann-Feynman forces
+///   ropt=2: free optimization of all nuclear coordinates (BFGS on the Hellmann-Feynman forces, as in
+///           Bischoff, PRA 101, 053413 (2020)); the centroid is kept fixed and the rotation about B is
+///           projected out (our phase cylinder is centred on the B axis); stop at |g| < gtol (Cartesian norm)
 /// Examples: hydrogen atom (default atoms=1,0,0,0); H2+ along B: atoms=1,0,0,-1;1,0,0,1;
 ///           H2+ perpendicular to B: atoms=1,-1,0,0;1,1,0,0
 
@@ -50,6 +53,36 @@ std::map<std::string, std::string> parse(int argc, char** argv) {
 double get(const std::map<std::string, std::string>& a, const std::string& key, double def) {
     auto it = a.find(key);
     return it == a.end() ? def : std::stod(it->second);
+}
+
+/// plot=<file>: write every orbital (complex) on a box grid |x|,|y| <= plotxy, |z| <= plotz with
+/// plotnxy x plotnxy x plotnz points; text: header, then "x y z Re Im" per point, one block per orbital
+void write_orbital_plot(World& world, const std::map<std::string, std::string>& args, double B,
+                        std::vector<complex_function_3d>& phi, const std::vector<double>& eps) {
+    if (!args.count("plot")) return;
+    const int N = int(phi.size());
+    const double pxy = get(args, "plotxy", 4.0 / std::sqrt(std::abs(B))), pz = get(args, "plotz", 1.0);
+    const int nxy = int(get(args, "plotnxy", 61)), nz = int(get(args, "plotnz", 81));
+    for (auto& f : phi) f.reconstruct();
+    if (world.rank() == 0) {
+        FILE* fp = std::fopen(args.at("plot").c_str(), "w");
+        std::fprintf(fp, "# magneticatom orbitals B=%.6f N=%d nxy=%d nz=%d plotxy=%.8f plotz=%.8f\n# eps", B, N, nxy, nz, pxy, pz);
+        for (int a = 0; a < N; ++a) std::fprintf(fp, " %.10f", eps[a]);
+        std::fprintf(fp, "\n");
+        for (int a = 0; a < N; ++a) {
+            std::fprintf(fp, "# orbital %d\n", a);
+            for (int i = 0; i < nxy; ++i)
+                for (int j = 0; j < nxy; ++j)
+                    for (int l = 0; l < nz; ++l) {
+                        const coord_3d r{-pxy + 2 * pxy * i / (nxy - 1), -pxy + 2 * pxy * j / (nxy - 1), -pz + 2 * pz * l / (nz - 1)};
+                        const double_complex v = phi[a](r);
+                        std::fprintf(fp, "%.6e %.6e %.6e %.8e %.8e\n", r[0], r[1], r[2], std::real(v), std::imag(v));
+                    }
+        }
+        std::fclose(fp);
+        std::printf("plot: orbitals written to %s\n", args.at("plot").c_str());
+        std::fflush(stdout);
+    }
 }
 
 /// first-derivative stencil of Derivative<>: ABGV (default), BLE or smoothed B-spline
@@ -325,6 +358,24 @@ int main(int argc, char** argv) {
                 : std::vector<complex_function_3d>{guess_su(1.0), guess_su(-1.0)};
             else
                 for (const auto& R : coords) phi.push_back(guess_at(R));
+            // zodd=b: multiply start orbital b by z (odd under z -> -z; an atom keeps this parity, e.g. He 1s 2p0)
+            if (args.count("zodd")) {
+                const int b = int(get(args, "zodd", 1));
+                MADNESS_CHECK(b >= 0 && b < int(phi.size()));
+                complex_function_3d zf = complex_factory_3d(world).functor([](const coord_3d& r) { return double_complex(r[2], 0.0); });
+                phi[b] = zf * phi[b];
+                phi[b].truncate();
+            }
+            // zeven=b: multiply start orbital b by z^2 (even, after Gram-Schmidt against orbital 0 it has two nodes
+            // along z: start for the even m = 0 excited orbital, e.g. He 1s 2s 3S0, which in strong B is the 1s0
+            // Landau orbital with one longitudinal excitation pair)
+            if (args.count("zeven")) {
+                const int b = int(get(args, "zeven", 1));
+                MADNESS_CHECK(b >= 0 && b < int(phi.size()));
+                complex_function_3d zf = complex_factory_3d(world).functor([](const coord_3d& r) { return double_complex(r[2] * r[2], 0.0); });
+                phi[b] = zf * phi[b];
+                phi[b].truncate();
+            }
             if (mm.empty()) mm.assign(N, 0);
             for (int i = 0; i < N; ++i) {   // Gram-Schmidt (localized or off-axis guesses overlap)
                 for (int j = 0; j < i; ++j) phi[i] = phi[i] - phi[j] * inner(phi[j], phi[i]);
@@ -353,11 +404,17 @@ int main(int argc, char** argv) {
             // geometry (>= 2 nuclei): Hellmann-Feynman forces after each converged SCF; ropt = 1 scales the
             // structure about its centroid (breathing coordinate R = |R_1 - R_0|, secant on dE/dR) and restarts
             // the SCF from the current orbitals, until |dE/dR| < gtol or the step < rtol
-            const bool ropt = get(args, "ropt", 0) != 0;
+            const int ropt_mode = int(get(args, "ropt", 0));
+            const bool ropt = ropt_mode != 0;
             const int maxgeo = ropt ? int(get(args, "maxgeo", 12)) : 1;
             const double gtol = get(args, "gtol", 1e-4), rtol = get(args, "rtol", 1e-4);
             const double dr0 = get(args, "dr0", 0.02), maxstep = get(args, "maxstep", 0.05);
             double Rprev = 0.0, gprev = 0.0;
+            // ropt = 2 (BFGS) state: inverse Hessian, last accepted point (coordinates, projected gradient, energy)
+            std::vector<double> bH, bx, bg;
+            double bE = 0.0;
+            bool bhave = false, bscaled = false;
+            int nback = 0;
             for (int geo = 0; geo < maxgeo; ++geo) {
                 double Eold = 0.0, dElast = 1.0;
                 auto t0 = std::chrono::steady_clock::now();
@@ -424,6 +481,7 @@ int main(int argc, char** argv) {
                     if (!std::isnan(ref)) std::printf("reference = %.10f   E - ref = %+.3e\n", ref, Eold - 0.5 * N * std::abs(B) - ref);
                     std::fflush(stdout);
                 }
+                write_orbital_plot(world, args, B, phi, eps);
                 // Hellmann-Feynman (fixed gauge origin: only Vnuc and E_nn depend on the nuclei; MRA has no
                 // nucleus-centred basis, so no Pulay terms):
                 //   g_A = dE/dR_A = <rho| dVnuc/dR_A> + dE_nn/dR_A,  rho = sum_i |phi_i|^2
@@ -461,6 +519,136 @@ int main(int argc, char** argv) {
                     for (int A = 0; A < nat; ++A) std::printf("  (%+.2e %+.2e %+.2e)", g[A][0], g[A][1], g[A][2]);
                     std::printf("\n");
                     std::fflush(stdout);
+                }
+                if (ropt_mode == 2) {
+                    // ---- free optimization of all 3N coordinates (BFGS, inverse-Hessian form) ----
+                    const int n3 = 3 * nat;
+                    const double Ephys = Eold - 0.5 * N * std::abs(B);
+                    std::vector<double> x(n3), gp(n3);
+                    for (int A = 0; A < nat; ++A)
+                        for (int ax = 0; ax < 3; ++ax) { x[3 * A + ax] = mol.get_atom(A).get_coords()[ax]; gp[3 * A + ax] = g[A][ax]; }
+                    // projector: no centroid translation, no rotation about the B (z) axis through the centroid
+                    std::vector<double> rz(n3, 0.0);
+                    for (int A = 0; A < nat; ++A) { rz[3 * A] = -d[A][1]; rz[3 * A + 1] = d[A][0]; }
+                    double rzz = 0.0;
+                    for (double v : rz) rzz += v * v;
+                    auto project = [&](std::vector<double>& v) {
+                        for (int ax = 0; ax < 3; ++ax) {
+                            double m = 0.0;
+                            for (int A = 0; A < nat; ++A) m += v[3 * A + ax] / nat;
+                            for (int A = 0; A < nat; ++A) v[3 * A + ax] -= m;
+                        }
+                        if (rzz > 1e-12) {
+                            double p = 0.0;
+                            for (int i = 0; i < n3; ++i) p += v[i] * rz[i];
+                            for (int i = 0; i < n3; ++i) v[i] -= p / rzz * rz[i];
+                        }
+                    };
+                    project(gp);
+                    double gnorm = 0.0;
+                    for (double v : gp) gnorm += v * v;
+                    gnorm = std::sqrt(gnorm);
+                    // shape and orientation: side lengths; tilt of the bond (2 nuclei) or of the plane normal (3) to B
+                    if (world.rank() == 0) {
+                        std::printf("geo2 %2d  |g| (projected, Cartesian) = %.3e  E_phys = %.10f  sides =", geo, gnorm, Ephys);
+                        for (int A = 0; A < nat; ++A)
+                            for (int Bn = A + 1; Bn < nat; ++Bn)
+                                std::printf(" %.6f", (mol.get_atom(Bn).get_coords() - mol.get_atom(A).get_coords()).normf());
+                        double tilt = -1.0;
+                        if (nat == 2) {
+                            const coord_3d u = mol.get_atom(1).get_coords() - mol.get_atom(0).get_coords();
+                            tilt = std::acos(std::min(1.0, std::abs(u[2]) / u.normf())) * 180.0 / M_PI;
+                            std::printf("  angle(bond, B) = %.3f deg", tilt);
+                        } else if (nat == 3) {
+                            const coord_3d u = mol.get_atom(1).get_coords() - mol.get_atom(0).get_coords();
+                            const coord_3d v = mol.get_atom(2).get_coords() - mol.get_atom(0).get_coords();
+                            coord_3d nn(0.0);
+                            nn[0] = u[1] * v[2] - u[2] * v[1];
+                            nn[1] = u[2] * v[0] - u[0] * v[2];
+                            nn[2] = u[0] * v[1] - u[1] * v[0];
+                            tilt = std::acos(std::min(1.0, std::abs(nn[2]) / nn.normf())) * 180.0 / M_PI;
+                            std::printf("  angle(normal, B) = %.3f deg", tilt);
+                        }
+                        std::printf("\n");
+                        std::fflush(stdout);
+                    }
+                    if (gnorm < gtol) { if (world.rank() == 0) print("geo2: converged, |g| <", gtol); break; }
+                    std::vector<double> xn(n3);
+                    if (bhave && Ephys > bE + 1e-6 && nback < 3) {
+                        // energy went up: halve the last step, keep the Hessian
+                        ++nback;
+                        for (int i = 0; i < n3; ++i) xn[i] = bx[i] + 0.5 * (x[i] - bx[i]);
+                        if (world.rank() == 0) std::printf("geo2: E rose by %.3e, step halved (%d)\n", Ephys - bE, nback);
+                    } else {
+                        nback = 0;
+                        if (!bhave) {
+                            bH.assign(n3 * n3, 0.0);
+                            for (int i = 0; i < n3; ++i) bH[i * n3 + i] = 1.0;
+                        } else {
+                            std::vector<double> s(n3), y(n3);
+                            double sy = 0.0, yy = 0.0, ss = 0.0;
+                            for (int i = 0; i < n3; ++i) { s[i] = x[i] - bx[i]; y[i] = gp[i] - bg[i]; sy += s[i] * y[i]; yy += y[i] * y[i]; ss += s[i] * s[i]; }
+                            if (sy > 1e-8 * std::sqrt(ss * yy)) {
+                                if (!bscaled) {   // first update: scale the unit start Hessian (Barzilai-Borwein)
+                                    for (double& h : bH) h *= sy / yy;
+                                    bscaled = true;
+                                }
+                                std::vector<double> Hy(n3, 0.0);
+                                for (int i = 0; i < n3; ++i)
+                                    for (int j = 0; j < n3; ++j) Hy[i] += bH[i * n3 + j] * y[j];
+                                double yHy = 0.0;
+                                for (int i = 0; i < n3; ++i) yHy += y[i] * Hy[i];
+                                const double rho = 1.0 / sy;
+                                for (int i = 0; i < n3; ++i)
+                                    for (int j = 0; j < n3; ++j)
+                                        bH[i * n3 + j] += -rho * (Hy[i] * s[j] + s[i] * Hy[j]) + (rho * rho * yHy + rho) * s[i] * s[j];
+                            } else if (world.rank() == 0) std::printf("geo2: s.y = %.2e <= 0, BFGS update skipped\n", sy);
+                        }
+                        std::vector<double> st(n3, 0.0);
+                        for (int i = 0; i < n3; ++i)
+                            for (int j = 0; j < n3; ++j) st[i] -= bH[i * n3 + j] * gp[j];
+                        project(st);
+                        double sg = 0.0;
+                        for (int i = 0; i < n3; ++i) sg += st[i] * gp[i];
+                        if (sg >= 0.0) {   // not downhill: reset to steepest descent
+                            for (int i = 0; i < n3; ++i) st[i] = -gp[i];
+                            for (double& h : bH) h = 0.0;
+                            for (int i = 0; i < n3; ++i) bH[i * n3 + i] = 1.0;
+                            bscaled = false;
+                            if (world.rank() == 0) print("geo2: not a descent direction, Hessian reset");
+                        }
+                        double smax = 0.0;   // largest single-nucleus displacement
+                        for (int A = 0; A < nat; ++A)
+                            smax = std::max(smax, std::sqrt(st[3 * A] * st[3 * A] + st[3 * A + 1] * st[3 * A + 1] + st[3 * A + 2] * st[3 * A + 2]));
+                        const double cap = bscaled ? maxstep : dr0;   // first (unscaled) step: largest move dr0
+                        const double f = (smax > cap || !bscaled) ? cap / std::max(smax, 1e-30) : 1.0;
+                        for (int i = 0; i < n3; ++i) xn[i] = x[i] + f * st[i];
+                        bx = x; bg = gp; bE = Ephys; bhave = true;
+                    }
+                    double smax = 0.0, offmax = 0.0;
+                    for (int A = 0; A < nat; ++A) {
+                        double s2 = 0.0;
+                        for (int ax = 0; ax < 3; ++ax) s2 += std::pow(xn[3 * A + ax] - x[3 * A + ax], 2);
+                        smax = std::max(smax, std::sqrt(s2));
+                        offmax = std::max(offmax, std::sqrt(xn[3 * A] * xn[3 * A] + xn[3 * A + 1] * xn[3 * A + 1]));
+                    }
+                    if (smax < rtol) { if (world.rank() == 0) print("geo2: step", smax, "< rtol, stop"); break; }
+                    const double rcut_geo = get(args, "rcut", 0.0);
+                    if (rcut_geo > 0 && offmax > rcut_geo - 0.70) {
+                        if (world.rank() == 0) std::printf("geo: STOP, the step would put a nucleus %.3f bohr off the B axis > rcut - 0.70\n", offmax);
+                        break;
+                    }
+                    for (int A = 0; A < nat; ++A) mol.set_atom_coords(A, xn[3 * A], xn[3 * A + 1], xn[3 * A + 2]);
+                    V = real_factory_3d(world).functor(MolecularPotentialFunctor(mol)).truncate_on_project();
+                    V.truncate();
+                    if (world.rank() == 0) {
+                        std::printf("geo: new atoms=");
+                        for (int A = 0; A < nat; ++A)
+                            std::printf("%s%u,%.6f,%.6f,%.6f", A ? ";" : "", mol.get_atom(A).atomic_number, xn[3 * A], xn[3 * A + 1], xn[3 * A + 2]);
+                        std::printf("   (largest move %.4f bohr)\n", smax);
+                        std::fflush(stdout);
+                    }
+                    continue;
                 }
                 if (!ropt || std::abs(gR) < gtol) break;
                 double Rn = R - (gR > 0 ? dr0 : -dr0);                 // first step: downhill by dr0
@@ -536,6 +724,10 @@ int main(int argc, char** argv) {
                             Eold, Eold - std::abs(B), sec);
                 if (!std::isnan(ref)) std::printf("reference = %.10f   E - ref = %+.3e\n", ref, Eold - ref);
                 std::fflush(stdout);
+            }
+            {   // plot=<file> (singlet: one doubly occupied orbital)
+                std::vector<complex_function_3d> pv{psi};
+                write_orbital_plot(world, args, B, pv, std::vector<double>{eps});
             }
         } else {
         auto t0 = std::chrono::steady_clock::now();
